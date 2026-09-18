@@ -100,7 +100,7 @@ router.post('/forgot-password', async (req, res) => {
     user.resetTokenExpiry = Date.now() + 3600000; // 1 hour
     await user.save();
 
-    const resetLink = `http://localhost:5173/reset-password/${resetToken}`;
+    const resetLink = `https://connectsphere-backend-7v84.onrender.com/reset-password/${resetToken}`;
 
     await sendEmail(
       user.email,
