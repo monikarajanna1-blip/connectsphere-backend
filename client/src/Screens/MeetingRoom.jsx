@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Mic, MicOff, Video, VideoOff, PhoneOff, Copy, Check } from 'lucide-react';
 import socket from '../socket';
 import '../App.css';
@@ -12,6 +12,8 @@ const ICE_SERVERS = {
 function MeetingRoom() {
   const { roomId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const isHost = location.state?.isHost || false;
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -22,9 +24,9 @@ function MeetingRoom() {
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
   const [error, setError] = useState('');
-  const [showCodeModal, setShowCodeModal] = useState(true);
   const [copied, setCopied] = useState(false);
   const [remoteConnected, setRemoteConnected] = useState(false);
+  const [needsUnmute, setNeedsUnmute] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -32,12 +34,10 @@ function MeetingRoom() {
     const createPeerConnection = (remoteId) => {
       const pc = new RTCPeerConnection(ICE_SERVERS);
 
-      // Send our local video/audio tracks to the other person
       streamRef.current.getTracks().forEach((track) => {
         pc.addTrack(track, streamRef.current);
       });
 
-      // When we discover a network path, send it to the other person
       pc.onicecandidate = (event) => {
         if (event.candidate) {
           socket.emit('ice-candidate', {
@@ -47,10 +47,16 @@ function MeetingRoom() {
         }
       };
 
-      // When the other person's video/audio arrives, show it
       pc.ontrack = (event) => {
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = event.streams[0];
+          remoteVideoRef.current.play().catch(() => {
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.muted = true;
+              remoteVideoRef.current.play();
+            }
+            setNeedsUnmute(true);
+          });
         }
         setRemoteConnected(true);
       };
@@ -76,10 +82,8 @@ function MeetingRoom() {
           localVideoRef.current.srcObject = localStream;
         }
 
-        // Now that we have our camera, join the signaling room
         socket.emit('join-room', roomId);
 
-        // Someone else joined AFTER us — we initiate the connection
         socket.on('user-joined', async (remoteId) => {
           remotePeerIdRef.current = remoteId;
           const pc = createPeerConnection(remoteId);
@@ -90,8 +94,6 @@ function MeetingRoom() {
           socket.emit('offer', { to: remoteId, offer });
         });
 
-        // We joined a room where someone was already waiting —
-        // they'll send us an offer
         socket.on('offer', async ({ from, offer }) => {
           remotePeerIdRef.current = from;
           const pc = createPeerConnection(from);
@@ -205,10 +207,12 @@ function MeetingRoom() {
         <div className="dash-logo">
           Connect<span>Sphere</span>
         </div>
-        <button className="room-code-chip" onClick={handleCopyCode}>
-          Room: {roomId}
-          {copied ? <Check size={13} /> : <Copy size={13} />}
-        </button>
+        {isHost && (
+          <button className="room-code-chip" onClick={handleCopyCode}>
+            Room: {roomId}
+            {copied ? <Check size={13} /> : <Copy size={13} />}
+          </button>
+        )}
       </div>
 
       {error && <p className="v3-error room-error">{error}</p>}
@@ -223,6 +227,20 @@ function MeetingRoom() {
           <div className="video-tile">
             <video ref={remoteVideoRef} autoPlay playsInline />
             <div className="video-label">Participant</div>
+            {needsUnmute && (
+              <button
+                className="unmute-btn"
+                onClick={() => {
+                  if (remoteVideoRef.current) {
+                    remoteVideoRef.current.muted = false;
+                    remoteVideoRef.current.play();
+                  }
+                  setNeedsUnmute(false);
+                }}
+              >
+                Tap to unmute
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -244,32 +262,6 @@ function MeetingRoom() {
           <PhoneOff size={20} />
         </button>
       </div>
-
-      {showCodeModal && (
-        <div className="modal-overlay">
-          <div className="v3-ring code-modal-ring">
-            <div className="v3-card code-modal">
-              <div className="v3-logo" style={{ fontSize: 32 }}>
-                Connect<span>Sphere</span>
-              </div>
-              <p className="code-modal-text">Share this code to invite others</p>
-              <div className="code-display">
-                <span>{roomId}</span>
-                <button onClick={handleCopyCode} className="code-copy-btn">
-                  {copied ? <Check size={16} /> : <Copy size={16} />}
-                  {copied ? 'Copied' : 'Copy'}
-                </button>
-              </div>
-              <button
-                className="v3-btn"
-                onClick={() => setShowCodeModal(false)}
-              >
-                OK, Got It
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

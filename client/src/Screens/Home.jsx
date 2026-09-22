@@ -31,9 +31,9 @@ function Home() {
     navigate('/login');
   };
 
-  const handleStartMeeting = () => {
-    const roomId = Math.random().toString(36).substring(2, 9);
-    navigate(`/meeting/${roomId}`);
+  const handleStartMeeting = () => { 
+    const roomId = Math.random().toString(36).substring(2, 9); 
+    navigate(`/meeting/${roomId}`, { state: { isHost: true } });
   };
 
   const handleJoinMeeting = (e) => {
