@@ -639,3 +639,58 @@
   font-size: 12px;
   padding: 8px 12px;
 }
+
+/* ===== Meeting room: fit the phone screen, keep controls visible ===== */
+.room-container {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.room-video-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.room-controls {
+  flex-shrink: 0;
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+  background: #08090D;
+  border-top: 1px solid #1a1a22;
+}
+
+@media (max-width: 700px) {
+  .room-video-grid {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+  }
+  .video-tile {
+    width: 100%;
+    max-width: 420px;
+    flex-shrink: 0;
+  }
+  .video-tile:first-child {
+    margin-top: auto;
+  }
+  .video-tile:last-child {
+    margin-bottom: auto;
+  }
+}
+
+.ended-card {
+  width: 340px;
+  max-width: 88vw;
+}
+
+.ended-title {
+  color: #fff;
+  font-size: 18px;
+  font-weight: 600;
+  margin: 18px 0 6px;
+}

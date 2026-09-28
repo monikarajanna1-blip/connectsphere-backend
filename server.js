@@ -22,6 +22,8 @@ app.use(express.json());
 app.use('/api/auth', authRoutes);
 
 // ===== SOCKET.IO SIGNALING =====
+const roomHosts = new Map(); // roomId -> socket.id of the host
+
 const emitRoomCount = (roomId) => {
   const size = io.sockets.adapter.rooms.get(roomId)?.size || 0;
   io.to(roomId).emit('room-count', size);
@@ -30,19 +32,42 @@ const emitRoomCount = (roomId) => {
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
-  socket.on('join-room', (rawRoomId) => {
-    const roomId = String(rawRoomId).trim().toLowerCase();
+  socket.on('join-room', (raw) => {
+    const payload = typeof raw === 'object' && raw !== null ? raw : { roomId: raw };
+    const roomId = String(payload.roomId).trim().toLowerCase();
+
     socket.data.roomId = roomId;
     socket.join(roomId);
-    console.log(`${socket.id} joined room ${roomId}`);
 
+    // The first person to claim host for a room becomes its host
+    if (payload.isHost && !roomHosts.has(roomId)) {
+      roomHosts.set(roomId, socket.id);
+    }
+
+    console.log(`${socket.id} joined room ${roomId}`);
     socket.to(roomId).emit('user-joined', socket.id);
     emitRoomCount(roomId);
+  });
+
+  // Host ends the call for everyone
+  socket.on('end-call', (ack) => {
+    const roomId = socket.data.roomId;
+    if (roomId && roomHosts.get(roomId) === socket.id) {
+      console.log(`Host ${socket.id} ended room ${roomId}`);
+      socket.to(roomId).emit('call-ended');
+      roomHosts.delete(roomId);
+    }
+    if (typeof ack === 'function') ack();
   });
 
   socket.on('disconnect', () => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
+
+    if (roomHosts.get(roomId) === socket.id) {
+      roomHosts.delete(roomId);
+    }
+
     console.log(`${socket.id} left room ${roomId}`);
     socket.to(roomId).emit('user-left', socket.id);
     emitRoomCount(roomId);

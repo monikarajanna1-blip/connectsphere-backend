@@ -43,10 +43,31 @@ function MeetingRoom() {
   const [copied, setCopied] = useState(false);
   const [remoteConnected, setRemoteConnected] = useState(false);
   const [needsUnmute, setNeedsUnmute] = useState(false);
+  const [callEnded, setCallEnded] = useState(false);
   const [socketStatus, setSocketStatus] = useState('connecting');
   const [roomCount, setRoomCount] = useState(0);
   const [iceState, setIceState] = useState('none');
   const [signalingState, setSignalingState] = useState('none');
+
+  const stopMedia = () => {
+    try {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    } catch (err) {
+      console.error(err);
+    }
+    streamRef.current = null;
+
+    try {
+      if (peerConnectionRef.current) {
+        peerConnectionRef.current.close();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+    peerConnectionRef.current = null;
+  };
 
   // Attach the remote stream AFTER the <video> element exists
   useEffect(() => {
@@ -111,9 +132,11 @@ function MeetingRoom() {
       return pc;
     };
 
+    const joinRoom = () => socket.emit('join-room', { roomId, isHost });
+
     const onConnect = () => {
       setSocketStatus('connected');
-      if (streamRef.current) socket.emit('join-room', roomId);
+      if (streamRef.current) joinRoom();
     };
     const onDisconnect = () => setSocketStatus('disconnected');
     const onRoomCount = (n) => setRoomCount(n);
@@ -167,7 +190,15 @@ function MeetingRoom() {
       setSignalingState('none');
     };
 
-    // Status listeners first, so the status line is accurate right away
+    // The host ended the call for everyone
+    const onCallEnded = () => {
+      stopMedia();
+      remoteStreamRef.current = null;
+      setRemoteConnected(false);
+      setCallEnded(true);
+      socket.disconnect();
+    };
+
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     socket.on('room-count', onRoomCount);
@@ -176,6 +207,7 @@ function MeetingRoom() {
     socket.on('answer', onAnswer);
     socket.on('ice-candidate', onIceCandidate);
     socket.on('user-left', onUserLeft);
+    socket.on('call-ended', onCallEnded);
 
     if (socket.connected) {
       setSocketStatus('connected');
@@ -200,7 +232,7 @@ function MeetingRoom() {
           localVideoRef.current.srcObject = localStream;
         }
 
-        if (socket.connected) socket.emit('join-room', roomId);
+        if (socket.connected) joinRoom();
       } catch (err) {
         console.error(err);
         setError(
@@ -221,16 +253,9 @@ function MeetingRoom() {
       socket.off('answer', onAnswer);
       socket.off('ice-candidate', onIceCandidate);
       socket.off('user-left', onUserLeft);
+      socket.off('call-ended', onCallEnded);
       socket.disconnect();
-
-      if (peerConnectionRef.current) {
-        peerConnectionRef.current.close();
-        peerConnectionRef.current = null;
-      }
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
-      }
+      stopMedia();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
@@ -253,29 +278,31 @@ function MeetingRoom() {
     }
   };
 
-  const handleLeave = () => {
-    try {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
-      }
-    } catch (err) {
-      console.error(err);
-    }
-    try {
-      if (peerConnectionRef.current) {
-        peerConnectionRef.current.close();
-        peerConnectionRef.current = null;
-      }
-    } catch (err) {
-      console.error(err);
-    }
+  const finishLeave = () => {
+    stopMedia();
     try {
       socket.disconnect();
     } catch (err) {
       console.error(err);
     }
     navigate('/home');
+  };
+
+  const handleLeave = () => {
+    if (isHost && socket.connected) {
+      // Tell the server to end the call for everyone, then leave
+      let done = false;
+      const go = () => {
+        if (!done) {
+          done = true;
+          finishLeave();
+        }
+      };
+      socket.emit('end-call', go);
+      setTimeout(go, 800);
+    } else {
+      finishLeave();
+    }
   };
 
   const handleCopyCode = () => {
@@ -345,10 +372,35 @@ function MeetingRoom() {
         >
           {camOn ? <Video size={20} /> : <VideoOff size={20} />}
         </button>
-        <button className="control-btn leave-btn" onClick={handleLeave}>
+        <button
+          className="control-btn leave-btn"
+          onClick={handleLeave}
+          title={isHost ? 'End call for everyone' : 'Leave call'}
+        >
           <PhoneOff size={20} />
         </button>
       </div>
+
+      {callEnded && (
+        <div className="modal-overlay">
+          <div className="v3-ring code-modal-ring">
+            <div className="v3-card ended-card">
+              <div className="v3-logo" style={{ fontSize: 32 }}>
+                Connect<span>Sphere</span>
+              </div>
+              <p className="ended-title">The call has been ended</p>
+              <p className="code-modal-text">The host ended this meeting.</p>
+              <button
+                className="v3-btn"
+                style={{ width: '100%' }}
+                onClick={() => navigate('/home')}
+              >
+                Back to Home
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
