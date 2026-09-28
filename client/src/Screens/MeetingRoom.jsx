@@ -4,9 +4,25 @@ import { Mic, MicOff, Video, VideoOff, PhoneOff, Copy, Check } from 'lucide-reac
 import socket from '../socket';
 import '../App.css';
 
-// Free public STUN server from Google — helps discover your public IP
 const ICE_SERVERS = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+  ],
 };
 
 function MeetingRoom() {
@@ -18,8 +34,8 @@ function MeetingRoom() {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const streamRef = useRef(null);
+  const remoteStreamRef = useRef(null);
   const peerConnectionRef = useRef(null);
-  const remotePeerIdRef = useRef(null);
 
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
@@ -27,11 +43,45 @@ function MeetingRoom() {
   const [copied, setCopied] = useState(false);
   const [remoteConnected, setRemoteConnected] = useState(false);
   const [needsUnmute, setNeedsUnmute] = useState(false);
+  const [socketStatus, setSocketStatus] = useState('connecting');
+  const [roomCount, setRoomCount] = useState(0);
+  const [iceState, setIceState] = useState('none');
+  const [signalingState, setSignalingState] = useState('none');
+
+  // Attach the remote stream AFTER the <video> element exists
+  useEffect(() => {
+    if (remoteConnected && remoteVideoRef.current && remoteStreamRef.current) {
+      const el = remoteVideoRef.current;
+      el.srcObject = remoteStreamRef.current;
+      el.play().catch(() => {
+        el.muted = true;
+        el.play().catch(() => {});
+        setNeedsUnmute(true);
+      });
+    }
+  }, [remoteConnected]);
 
   useEffect(() => {
     let cancelled = false;
+    const pendingCandidates = [];
+
+    const flushCandidates = async () => {
+      const pc = peerConnectionRef.current;
+      if (!pc || !pc.remoteDescription) return;
+      while (pendingCandidates.length) {
+        const c = pendingCandidates.shift();
+        try {
+          await pc.addIceCandidate(c);
+        } catch (err) {
+          console.error('addIceCandidate failed:', err);
+        }
+      }
+    };
 
     const createPeerConnection = (remoteId) => {
+      if (peerConnectionRef.current) {
+        peerConnectionRef.current.close();
+      }
       const pc = new RTCPeerConnection(ICE_SERVERS);
 
       streamRef.current.getTracks().forEach((track) => {
@@ -47,23 +97,91 @@ function MeetingRoom() {
         }
       };
 
+      pc.oniceconnectionstatechange = () => setIceState(pc.iceConnectionState);
+      pc.onsignalingstatechange = () => setSignalingState(pc.signalingState);
+
       pc.ontrack = (event) => {
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = event.streams[0];
-          remoteVideoRef.current.play().catch(() => {
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.muted = true;
-              remoteVideoRef.current.play();
-            }
-            setNeedsUnmute(true);
-          });
-        }
+        remoteStreamRef.current = event.streams[0];
         setRemoteConnected(true);
       };
 
       peerConnectionRef.current = pc;
+      setIceState(pc.iceConnectionState);
+      setSignalingState(pc.signalingState);
       return pc;
     };
+
+    const onConnect = () => {
+      setSocketStatus('connected');
+      if (streamRef.current) socket.emit('join-room', roomId);
+    };
+    const onDisconnect = () => setSocketStatus('disconnected');
+    const onRoomCount = (n) => setRoomCount(n);
+
+    const onUserJoined = async (remoteId) => {
+      const pc = createPeerConnection(remoteId);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit('offer', { to: remoteId, offer });
+    };
+
+    const onOffer = async ({ from, offer }) => {
+      const pc = createPeerConnection(from);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      await flushCandidates();
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('answer', { to: from, answer });
+    };
+
+    const onAnswer = async ({ answer }) => {
+      const pc = peerConnectionRef.current;
+      if (!pc) return;
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      await flushCandidates();
+    };
+
+    const onIceCandidate = async ({ candidate }) => {
+      if (!candidate) return;
+      const pc = peerConnectionRef.current;
+      if (pc && pc.remoteDescription) {
+        try {
+          await pc.addIceCandidate(candidate);
+        } catch (err) {
+          console.error('addIceCandidate failed:', err);
+        }
+      } else {
+        pendingCandidates.push(candidate);
+      }
+    };
+
+    const onUserLeft = () => {
+      remoteStreamRef.current = null;
+      setRemoteConnected(false);
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+      if (peerConnectionRef.current) {
+        peerConnectionRef.current.close();
+        peerConnectionRef.current = null;
+      }
+      setIceState('none');
+      setSignalingState('none');
+    };
+
+    // Status listeners first, so the status line is accurate right away
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.on('room-count', onRoomCount);
+    socket.on('user-joined', onUserJoined);
+    socket.on('offer', onOffer);
+    socket.on('answer', onAnswer);
+    socket.on('ice-candidate', onIceCandidate);
+    socket.on('user-left', onUserLeft);
+
+    if (socket.connected) {
+      setSocketStatus('connected');
+    } else {
+      socket.connect();
+    }
 
     const startCamera = async () => {
       try {
@@ -82,63 +200,11 @@ function MeetingRoom() {
           localVideoRef.current.srcObject = localStream;
         }
 
-        socket.emit('join-room', roomId);
-
-        socket.on('user-joined', async (remoteId) => {
-          remotePeerIdRef.current = remoteId;
-          const pc = createPeerConnection(remoteId);
-
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-
-          socket.emit('offer', { to: remoteId, offer });
-        });
-
-        socket.on('offer', async ({ from, offer }) => {
-          remotePeerIdRef.current = from;
-          const pc = createPeerConnection(from);
-
-          await pc.setRemoteDescription(new RTCSessionDescription(offer));
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-
-          socket.emit('answer', { to: from, answer });
-        });
-
-        socket.on('answer', async ({ answer }) => {
-          if (peerConnectionRef.current) {
-            await peerConnectionRef.current.setRemoteDescription(
-              new RTCSessionDescription(answer)
-            );
-          }
-        });
-
-        socket.on('ice-candidate', async ({ candidate }) => {
-          if (peerConnectionRef.current && candidate) {
-            try {
-              await peerConnectionRef.current.addIceCandidate(
-                new RTCIceCandidate(candidate)
-              );
-            } catch (err) {
-              console.error('Error adding ICE candidate:', err);
-            }
-          }
-        });
-
-        socket.on('user-left', () => {
-          setRemoteConnected(false);
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = null;
-          }
-          if (peerConnectionRef.current) {
-            peerConnectionRef.current.close();
-            peerConnectionRef.current = null;
-          }
-        });
+        if (socket.connected) socket.emit('join-room', roomId);
       } catch (err) {
         console.error(err);
         setError(
-          'Could not access camera/microphone. Please allow permission and reload.'
+          `Could not access camera/microphone (${err.name}). Please allow permission and reload.`
         );
       }
     };
@@ -147,15 +213,19 @@ function MeetingRoom() {
 
     return () => {
       cancelled = true;
-      socket.off('user-joined');
-      socket.off('offer');
-      socket.off('answer');
-      socket.off('ice-candidate');
-      socket.off('user-left');
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+      socket.off('room-count', onRoomCount);
+      socket.off('user-joined', onUserJoined);
+      socket.off('offer', onOffer);
+      socket.off('answer', onAnswer);
+      socket.off('ice-candidate', onIceCandidate);
+      socket.off('user-left', onUserLeft);
       socket.disconnect();
 
       if (peerConnectionRef.current) {
         peerConnectionRef.current.close();
+        peerConnectionRef.current = null;
       }
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
@@ -184,14 +254,27 @@ function MeetingRoom() {
   };
 
   const handleLeave = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
+    try {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
+    } catch (err) {
+      console.error(err);
     }
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
+    try {
+      if (peerConnectionRef.current) {
+        peerConnectionRef.current.close();
+        peerConnectionRef.current = null;
+      }
+    } catch (err) {
+      console.error(err);
     }
-    socket.disconnect();
+    try {
+      socket.disconnect();
+    } catch (err) {
+      console.error(err);
+    }
     navigate('/home');
   };
 
@@ -215,6 +298,10 @@ function MeetingRoom() {
         )}
       </div>
 
+      <div className="debug-strip">
+        Socket: {socketStatus} · In room: {roomCount} · Signaling: {signalingState} · ICE: {iceState}
+      </div>
+
       {error && <p className="v3-error room-error">{error}</p>}
 
       <div className="room-video-grid">
@@ -233,7 +320,7 @@ function MeetingRoom() {
                 onClick={() => {
                   if (remoteVideoRef.current) {
                     remoteVideoRef.current.muted = false;
-                    remoteVideoRef.current.play();
+                    remoteVideoRef.current.play().catch(() => {});
                   }
                   setNeedsUnmute(false);
                 }}

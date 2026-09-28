@@ -632,3 +632,10 @@
   font-size: 12px;
   cursor: pointer;
 }
+
+.debug-strip {
+  text-align: center;
+  color: #7A8699;
+  font-size: 12px;
+  padding: 8px 12px;
+}

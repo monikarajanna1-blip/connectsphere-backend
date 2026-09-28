@@ -22,26 +22,39 @@ app.use(express.json());
 app.use('/api/auth', authRoutes);
 
 // ===== SOCKET.IO SIGNALING =====
+const emitRoomCount = (roomId) => {
+  const size = io.sockets.adapter.rooms.get(roomId)?.size || 0;
+  io.to(roomId).emit('room-count', size);
+};
+
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
-  socket.on('join-room', (roomId) => {
+  socket.on('join-room', (rawRoomId) => {
+    const roomId = String(rawRoomId).trim().toLowerCase();
+    socket.data.roomId = roomId;
     socket.join(roomId);
     console.log(`${socket.id} joined room ${roomId}`);
 
     socket.to(roomId).emit('user-joined', socket.id);
+    emitRoomCount(roomId);
+  });
 
-    socket.on('disconnect', () => {
-      console.log(`${socket.id} left room ${roomId}`);
-      socket.to(roomId).emit('user-left', socket.id);
-    });
+  socket.on('disconnect', () => {
+    const roomId = socket.data.roomId;
+    if (!roomId) return;
+    console.log(`${socket.id} left room ${roomId}`);
+    socket.to(roomId).emit('user-left', socket.id);
+    emitRoomCount(roomId);
   });
 
   socket.on('offer', ({ to, offer }) => {
+    console.log(`offer ${socket.id} -> ${to}`);
     io.to(to).emit('offer', { from: socket.id, offer });
   });
 
   socket.on('answer', ({ to, answer }) => {
+    console.log(`answer ${socket.id} -> ${to}`);
     io.to(to).emit('answer', { from: socket.id, answer });
   });
 
@@ -53,7 +66,9 @@ io.on('connection', (socket) => {
 // ===== SERVE THE BUILT REACT APP =====
 app.use(express.static(path.join(__dirname, 'client/dist')));
 
- app.use((req, res) => { res.sendFile(path.join(__dirname, 'client', 'dist', 'index.html')); });
+app.use((req, res) => {
+  res.sendFile(path.join(__dirname, 'client', 'dist', 'index.html'));
+});
 
 mongoose
   .connect(process.env.MONGO_URI)
