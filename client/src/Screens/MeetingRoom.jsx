@@ -44,6 +44,8 @@ function MeetingRoom() {
   const [remoteConnected, setRemoteConnected] = useState(false);
   const [needsUnmute, setNeedsUnmute] = useState(false);
   const [callEnded, setCallEnded] = useState(false);
+  const [roomNotFound, setRoomNotFound] = useState(false);
+  const [showStartPopup, setShowStartPopup] = useState(isHost);
   const [socketStatus, setSocketStatus] = useState('connecting');
   const [roomCount, setRoomCount] = useState(0);
   const [iceState, setIceState] = useState('none');
@@ -69,7 +71,6 @@ function MeetingRoom() {
     peerConnectionRef.current = null;
   };
 
-  // Attach the remote stream AFTER the <video> element exists
   useEffect(() => {
     if (remoteConnected && remoteVideoRef.current && remoteStreamRef.current) {
       const el = remoteVideoRef.current;
@@ -141,6 +142,12 @@ function MeetingRoom() {
     const onDisconnect = () => setSocketStatus('disconnected');
     const onRoomCount = (n) => setRoomCount(n);
 
+    const onRoomNotFound = () => {
+      stopMedia();
+      setRoomNotFound(true);
+      socket.disconnect();
+    };
+
     const onUserJoined = async (remoteId) => {
       const pc = createPeerConnection(remoteId);
       const offer = await pc.createOffer();
@@ -190,7 +197,6 @@ function MeetingRoom() {
       setSignalingState('none');
     };
 
-    // The host ended the call for everyone
     const onCallEnded = () => {
       stopMedia();
       remoteStreamRef.current = null;
@@ -202,6 +208,7 @@ function MeetingRoom() {
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     socket.on('room-count', onRoomCount);
+    socket.on('room-not-found', onRoomNotFound);
     socket.on('user-joined', onUserJoined);
     socket.on('offer', onOffer);
     socket.on('answer', onAnswer);
@@ -248,6 +255,7 @@ function MeetingRoom() {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
       socket.off('room-count', onRoomCount);
+      socket.off('room-not-found', onRoomNotFound);
       socket.off('user-joined', onUserJoined);
       socket.off('offer', onOffer);
       socket.off('answer', onAnswer);
@@ -290,7 +298,6 @@ function MeetingRoom() {
 
   const handleLeave = () => {
     if (isHost && socket.connected) {
-      // Tell the server to end the call for everyone, then leave
       let done = false;
       const go = () => {
         if (!done) {
@@ -310,6 +317,34 @@ function MeetingRoom() {
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  if (roomNotFound) {
+    return (
+      <div className="room-container">
+        <div className="modal-overlay">
+          <div className="v3-ring code-modal-ring">
+            <div className="v3-card ended-card">
+              <div className="v3-logo" style={{ fontSize: 32 }}>
+                Connect<span>Sphere</span>
+              </div>
+              <p className="ended-title">Meeting not found</p>
+              <p className="code-modal-text">
+                No host has started a meeting with this code. Check the code
+                and try again.
+              </p>
+              <button
+                className="v3-btn"
+                style={{ width: '100%' }}
+                onClick={() => navigate('/home')}
+              >
+                Back to Home
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="room-container">
@@ -380,6 +415,32 @@ function MeetingRoom() {
           <PhoneOff size={20} />
         </button>
       </div>
+
+      {showStartPopup && isHost && (
+        <div className="modal-overlay">
+          <div className="v3-ring code-modal-ring">
+            <div className="v3-card code-modal">
+              <div className="v3-logo" style={{ fontSize: 32 }}>
+                Connect<span>Sphere</span>
+              </div>
+              <p className="code-modal-text">Share this code to invite others</p>
+              <div className="code-display">
+                <span>{roomId}</span>
+                <button onClick={handleCopyCode} className="code-copy-btn">
+                  {copied ? <Check size={16} /> : <Copy size={16} />}
+                  {copied ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+              <button
+                className="v3-btn"
+                onClick={() => setShowStartPopup(false)}
+              >
+                OK, Got It
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {callEnded && (
         <div className="modal-overlay">

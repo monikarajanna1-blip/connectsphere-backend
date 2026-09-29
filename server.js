@@ -36,20 +36,26 @@ io.on('connection', (socket) => {
     const payload = typeof raw === 'object' && raw !== null ? raw : { roomId: raw };
     const roomId = String(payload.roomId).trim().toLowerCase();
 
+    if (payload.isHost) {
+      // Host always gets in, and claims the room if nobody else already did
+      if (!roomHosts.has(roomId)) {
+        roomHosts.set(roomId, socket.id);
+      }
+    } else if (!roomHosts.has(roomId)) {
+      // A participant tried to join a room that no host has started
+      console.log(`${socket.id} tried to join nonexistent room ${roomId}`);
+      socket.emit('room-not-found');
+      return;
+    }
+
     socket.data.roomId = roomId;
     socket.join(roomId);
-
-    // The first person to claim host for a room becomes its host
-    if (payload.isHost && !roomHosts.has(roomId)) {
-      roomHosts.set(roomId, socket.id);
-    }
 
     console.log(`${socket.id} joined room ${roomId}`);
     socket.to(roomId).emit('user-joined', socket.id);
     emitRoomCount(roomId);
   });
 
-  // Host ends the call for everyone
   socket.on('end-call', (ack) => {
     const roomId = socket.data.roomId;
     if (roomId && roomHosts.get(roomId) === socket.id) {
@@ -74,12 +80,10 @@ io.on('connection', (socket) => {
   });
 
   socket.on('offer', ({ to, offer }) => {
-    console.log(`offer ${socket.id} -> ${to}`);
     io.to(to).emit('offer', { from: socket.id, offer });
   });
 
   socket.on('answer', ({ to, answer }) => {
-    console.log(`answer ${socket.id} -> ${to}`);
     io.to(to).emit('answer', { from: socket.id, answer });
   });
 
