@@ -360,10 +360,6 @@ function MeetingRoom() {
         )}
       </div>
 
-      <div className="debug-strip">
-        Socket: {socketStatus} · In room: {roomCount} · Signaling: {signalingState} · ICE: {iceState}
-      </div>
-
       {error && <p className="v3-error room-error">{error}</p>}
 
       <div className="room-video-grid">
