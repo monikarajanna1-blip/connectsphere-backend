@@ -34,7 +34,7 @@ io.on('connection', (socket) => {
 
   socket.on('join-room', (raw) => {
     const payload = typeof raw === 'object' && raw !== null ? raw : { roomId: raw };
-    const roomId = String(payload.roomId).trim().toLowerCase();
+    const roomId = String(payload.roomId).trim();
 
     if (payload.isHost) {
       // Host always gets in, and claims the room if nobody else already did
