@@ -32,24 +32,22 @@ function MeetingRoom() {
   const isHost = location.state?.isHost || false;
 
   const localVideoRef = useRef(null);
-  const remoteVideoRef = useRef(null);
   const streamRef = useRef(null);
-  const remoteStreamRef = useRef(null);
-  const peerConnectionRef = useRef(null);
+
+  // One RTCPeerConnection per other participant, keyed by their socket id
+  const peerConnectionsRef = useRef({});
 
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
-  const [remoteConnected, setRemoteConnected] = useState(false);
   const [needsUnmute, setNeedsUnmute] = useState(false);
   const [callEnded, setCallEnded] = useState(false);
   const [roomNotFound, setRoomNotFound] = useState(false);
   const [showStartPopup, setShowStartPopup] = useState(isHost);
-  const [socketStatus, setSocketStatus] = useState('connecting');
-  const [roomCount, setRoomCount] = useState(0);
-  const [iceState, setIceState] = useState('none');
-  const [signalingState, setSignalingState] = useState('none');
+
+  // peers: { [socketId]: MediaStream }
+  const [peers, setPeers] = useState({});
 
   const stopMedia = () => {
     try {
@@ -61,37 +59,26 @@ function MeetingRoom() {
     }
     streamRef.current = null;
 
-    try {
-      if (peerConnectionRef.current) {
-        peerConnectionRef.current.close();
+    Object.values(peerConnectionsRef.current).forEach((pc) => {
+      try {
+        pc.close();
+      } catch (err) {
+        console.error(err);
       }
-    } catch (err) {
-      console.error(err);
-    }
-    peerConnectionRef.current = null;
+    });
+    peerConnectionsRef.current = {};
   };
 
   useEffect(() => {
-    if (remoteConnected && remoteVideoRef.current && remoteStreamRef.current) {
-      const el = remoteVideoRef.current;
-      el.srcObject = remoteStreamRef.current;
-      el.play().catch(() => {
-        el.muted = true;
-        el.play().catch(() => {});
-        setNeedsUnmute(true);
-      });
-    }
-  }, [remoteConnected]);
-
-  useEffect(() => {
     let cancelled = false;
-    const pendingCandidates = [];
+    const pendingCandidates = {}; // remoteId -> [candidate, ...]
 
-    const flushCandidates = async () => {
-      const pc = peerConnectionRef.current;
+    const flushCandidates = async (remoteId) => {
+      const pc = peerConnectionsRef.current[remoteId];
       if (!pc || !pc.remoteDescription) return;
-      while (pendingCandidates.length) {
-        const c = pendingCandidates.shift();
+      const queue = pendingCandidates[remoteId] || [];
+      pendingCandidates[remoteId] = [];
+      for (const c of queue) {
         try {
           await pc.addIceCandidate(c);
         } catch (err) {
@@ -101,8 +88,8 @@ function MeetingRoom() {
     };
 
     const createPeerConnection = (remoteId) => {
-      if (peerConnectionRef.current) {
-        peerConnectionRef.current.close();
+      if (peerConnectionsRef.current[remoteId]) {
+        peerConnectionsRef.current[remoteId].close();
       }
       const pc = new RTCPeerConnection(ICE_SERVERS);
 
@@ -112,35 +99,40 @@ function MeetingRoom() {
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
-          socket.emit('ice-candidate', {
-            to: remoteId,
-            candidate: event.candidate,
+          socket.emit('ice-candidate', { to: remoteId, candidate: event.candidate });
+        }
+      };
+
+      pc.ontrack = (event) => {
+        setPeers((prev) => ({ ...prev, [remoteId]: event.streams[0] }));
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) {
+          setPeers((prev) => {
+            const next = { ...prev };
+            delete next[remoteId];
+            return next;
           });
         }
       };
 
-      pc.oniceconnectionstatechange = () => setIceState(pc.iceConnectionState);
-      pc.onsignalingstatechange = () => setSignalingState(pc.signalingState);
-
-      pc.ontrack = (event) => {
-        remoteStreamRef.current = event.streams[0];
-        setRemoteConnected(true);
-      };
-
-      peerConnectionRef.current = pc;
-      setIceState(pc.iceConnectionState);
-      setSignalingState(pc.signalingState);
+      peerConnectionsRef.current[remoteId] = pc;
       return pc;
+    };
+
+    const connectToNewPeer = async (remoteId) => {
+      const pc = createPeerConnection(remoteId);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit('offer', { to: remoteId, offer });
     };
 
     const joinRoom = () => socket.emit('join-room', { roomId, isHost });
 
     const onConnect = () => {
-      setSocketStatus('connected');
       if (streamRef.current) joinRoom();
     };
-    const onDisconnect = () => setSocketStatus('disconnected');
-    const onRoomCount = (n) => setRoomCount(n);
 
     const onRoomNotFound = () => {
       stopMedia();
@@ -148,32 +140,29 @@ function MeetingRoom() {
       socket.disconnect();
     };
 
-    const onUserJoined = async (remoteId) => {
-      const pc = createPeerConnection(remoteId);
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit('offer', { to: remoteId, offer });
+    const onUserJoined = (remoteId) => {
+      connectToNewPeer(remoteId);
     };
 
     const onOffer = async ({ from, offer }) => {
       const pc = createPeerConnection(from);
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      await flushCandidates();
+      await flushCandidates(from);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       socket.emit('answer', { to: from, answer });
     };
 
-    const onAnswer = async ({ answer }) => {
-      const pc = peerConnectionRef.current;
+    const onAnswer = async ({ from, answer }) => {
+      const pc = peerConnectionsRef.current[from];
       if (!pc) return;
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
-      await flushCandidates();
+      await flushCandidates(from);
     };
 
-    const onIceCandidate = async ({ candidate }) => {
+    const onIceCandidate = async ({ from, candidate }) => {
       if (!candidate) return;
-      const pc = peerConnectionRef.current;
+      const pc = peerConnectionsRef.current[from];
       if (pc && pc.remoteDescription) {
         try {
           await pc.addIceCandidate(candidate);
@@ -181,33 +170,32 @@ function MeetingRoom() {
           console.error('addIceCandidate failed:', err);
         }
       } else {
-        pendingCandidates.push(candidate);
+        if (!pendingCandidates[from]) pendingCandidates[from] = [];
+        pendingCandidates[from].push(candidate);
       }
     };
 
-    const onUserLeft = () => {
-      remoteStreamRef.current = null;
-      setRemoteConnected(false);
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
-      if (peerConnectionRef.current) {
-        peerConnectionRef.current.close();
-        peerConnectionRef.current = null;
+    const onUserLeft = (remoteId) => {
+      const pc = peerConnectionsRef.current[remoteId];
+      if (pc) {
+        pc.close();
+        delete peerConnectionsRef.current[remoteId];
       }
-      setIceState('none');
-      setSignalingState('none');
+      setPeers((prev) => {
+        const next = { ...prev };
+        delete next[remoteId];
+        return next;
+      });
     };
 
     const onCallEnded = () => {
       stopMedia();
-      remoteStreamRef.current = null;
-      setRemoteConnected(false);
+      setPeers({});
       setCallEnded(true);
       socket.disconnect();
     };
 
     socket.on('connect', onConnect);
-    socket.on('disconnect', onDisconnect);
-    socket.on('room-count', onRoomCount);
     socket.on('room-not-found', onRoomNotFound);
     socket.on('user-joined', onUserJoined);
     socket.on('offer', onOffer);
@@ -216,11 +204,7 @@ function MeetingRoom() {
     socket.on('user-left', onUserLeft);
     socket.on('call-ended', onCallEnded);
 
-    if (socket.connected) {
-      setSocketStatus('connected');
-    } else {
-      socket.connect();
-    }
+    if (!socket.connected) socket.connect();
 
     const startCamera = async () => {
       try {
@@ -253,8 +237,6 @@ function MeetingRoom() {
     return () => {
       cancelled = true;
       socket.off('connect', onConnect);
-      socket.off('disconnect', onDisconnect);
-      socket.off('room-count', onRoomCount);
       socket.off('room-not-found', onRoomNotFound);
       socket.off('user-joined', onUserJoined);
       socket.off('offer', onOffer);
@@ -346,6 +328,8 @@ function MeetingRoom() {
     );
   }
 
+  const peerIds = Object.keys(peers);
+
   return (
     <div className="room-container">
       <div className="room-header">
@@ -368,27 +352,23 @@ function MeetingRoom() {
           <div className="video-label">You</div>
         </div>
 
-        {remoteConnected && (
-          <div className="video-tile">
-            <video ref={remoteVideoRef} autoPlay playsInline />
-            <div className="video-label">Participant</div>
-            {needsUnmute && (
-              <button
-                className="unmute-btn"
-                onClick={() => {
-                  if (remoteVideoRef.current) {
-                    remoteVideoRef.current.muted = false;
-                    remoteVideoRef.current.play().catch(() => {});
-                  }
-                  setNeedsUnmute(false);
-                }}
-              >
-                Tap to unmute
-              </button>
-            )}
-          </div>
-        )}
+        {peerIds.map((id) => (
+          <RemoteVideo
+            key={id}
+            stream={peers[id]}
+            onNeedsUnmute={() => setNeedsUnmute(true)}
+          />
+        ))}
       </div>
+
+      {needsUnmute && (
+        <button
+          className="unmute-btn-floating"
+          onClick={() => setNeedsUnmute(false)}
+        >
+          Tap to unmute
+        </button>
+      )}
 
       <div className="room-controls">
         <button
@@ -427,10 +407,7 @@ function MeetingRoom() {
                   {copied ? 'Copied' : 'Copy'}
                 </button>
               </div>
-              <button
-                className="v3-btn"
-                onClick={() => setShowStartPopup(false)}
-              >
+              <button className="v3-btn" onClick={() => setShowStartPopup(false)}>
                 OK, Got It
               </button>
             </div>
@@ -458,6 +435,31 @@ function MeetingRoom() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// A small dedicated component per remote participant, so each one
+// gets its own <video> element and its own play()/unmute handling.
+function RemoteVideo({ stream, onNeedsUnmute }) {
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el || !stream) return;
+    el.srcObject = stream;
+    el.play().catch(() => {
+      el.muted = true;
+      el.play().catch(() => {});
+      onNeedsUnmute();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stream]);
+
+  return (
+    <div className="video-tile">
+      <video ref={videoRef} autoPlay playsInline />
+      <div className="video-label">Participant</div>
     </div>
   );
 }

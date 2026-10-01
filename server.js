@@ -37,12 +37,10 @@ io.on('connection', (socket) => {
     const roomId = String(payload.roomId).trim();
 
     if (payload.isHost) {
-      // Host always gets in, and claims the room if nobody else already did
       if (!roomHosts.has(roomId)) {
         roomHosts.set(roomId, socket.id);
       }
     } else if (!roomHosts.has(roomId)) {
-      // A participant tried to join a room that no host has started
       console.log(`${socket.id} tried to join nonexistent room ${roomId}`);
       socket.emit('room-not-found');
       return;
@@ -52,6 +50,8 @@ io.on('connection', (socket) => {
     socket.join(roomId);
 
     console.log(`${socket.id} joined room ${roomId}`);
+    // Every existing member independently connects to the newcomer —
+    // this is what lets the mesh scale to 3+ people.
     socket.to(roomId).emit('user-joined', socket.id);
     emitRoomCount(roomId);
   });

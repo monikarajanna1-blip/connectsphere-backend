@@ -694,3 +694,23 @@
   font-weight: 600;
   margin: 18px 0 6px;
 }
+.unmute-btn-floating {
+  position: fixed;
+  bottom: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(165, 92, 224, 0.9);
+  color: #fff;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 12.5px;
+  cursor: pointer;
+  z-index: 50;
+}
+
+@media (max-width: 700px) {
+  .room-video-grid {
+    flex-wrap: wrap;
+  }
+}
