@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Copy, Check } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Copy, Check, X } from 'lucide-react';
 import socket from '../socket';
 import '../App.css';
 
@@ -45,7 +45,7 @@ function MeetingRoom() {
   const [callEnded, setCallEnded] = useState(false);
   const [roomNotFound, setRoomNotFound] = useState(false);
   const [showStartPopup, setShowStartPopup] = useState(isHost);
-
+  const [hostLeftBanner, setHostLeftBanner] = useState(false);
   // peers: { [socketId]: MediaStream }
   const [peers, setPeers] = useState({});
 
@@ -194,6 +194,9 @@ function MeetingRoom() {
       setCallEnded(true);
       socket.disconnect();
     };
+    const onHostLeft = () => {
+      setHostLeftBanner(true);
+   };
 
     socket.on('connect', onConnect);
     socket.on('room-not-found', onRoomNotFound);
@@ -203,6 +206,7 @@ function MeetingRoom() {
     socket.on('ice-candidate', onIceCandidate);
     socket.on('user-left', onUserLeft);
     socket.on('call-ended', onCallEnded);
+    socket.on('host-left', onHostLeft);
 
     if (!socket.connected) socket.connect();
 
@@ -244,6 +248,7 @@ function MeetingRoom() {
       socket.off('ice-candidate', onIceCandidate);
       socket.off('user-left', onUserLeft);
       socket.off('call-ended', onCallEnded);
+      socket.off('host-left', onHostLeft);
       socket.disconnect();
       stopMedia();
     };
@@ -343,8 +348,16 @@ function MeetingRoom() {
           </button>
         )}
       </div>
-
       {error && <p className="v3-error room-error">{error}</p>}
+
+      {hostLeftBanner && (
+        <div className="host-left-banner">
+          <span>The host has left the meeting. You can keep talking with others here.</span>
+          <button onClick={() => setHostLeftBanner(false)}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       <div className="room-video-grid">
         <div className="video-tile">

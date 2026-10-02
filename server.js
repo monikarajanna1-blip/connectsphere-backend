@@ -50,16 +50,16 @@ io.on('connection', (socket) => {
     socket.join(roomId);
 
     console.log(`${socket.id} joined room ${roomId}`);
-    // Every existing member independently connects to the newcomer —
-    // this is what lets the mesh scale to 3+ people.
     socket.to(roomId).emit('user-joined', socket.id);
     emitRoomCount(roomId);
   });
 
+  // Host deliberately ends the call for everyone
   socket.on('end-call', (ack) => {
     const roomId = socket.data.roomId;
     if (roomId && roomHosts.get(roomId) === socket.id) {
       console.log(`Host ${socket.id} ended room ${roomId}`);
+      socket.data.endedDeliberately = true;
       socket.to(roomId).emit('call-ended');
       roomHosts.delete(roomId);
     }
@@ -70,8 +70,16 @@ io.on('connection', (socket) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
 
-    if (roomHosts.get(roomId) === socket.id) {
+    const wasHost = roomHosts.get(roomId) === socket.id;
+
+    if (wasHost) {
       roomHosts.delete(roomId);
+      // Host disappeared without pressing End Call — notify the room,
+      // but don't end the call for the people still there.
+      if (!socket.data.endedDeliberately) {
+        console.log(`Host ${socket.id} disconnected from room ${roomId} without ending the call`);
+        socket.to(roomId).emit('host-left');
+      }
     }
 
     console.log(`${socket.id} left room ${roomId}`);

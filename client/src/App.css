@@ -714,3 +714,26 @@
     flex-wrap: wrap;
   }
 }
+
+.host-left-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(165, 92, 224, 0.15);
+  border: 1px solid rgba(165, 92, 224, 0.35);
+  color: #E6D6FF;
+  font-size: 13px;
+  padding: 10px 16px;
+  margin: 10px 16px 0;
+  border-radius: 10px;
+}
+
+.host-left-banner button {
+  background: none;
+  border: none;
+  color: #E6D6FF;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+}
