@@ -98,6 +98,17 @@ io.on('connection', (socket) => {
   socket.on('ice-candidate', ({ to, candidate }) => {
     io.to(to).emit('ice-candidate', { from: socket.id, candidate });
   });
+
+  // Relay sign-language captions to everyone else in the room
+  socket.on('sign-caption', ({ text, final }) => {
+    const roomId = socket.data.roomId;
+    if (!roomId) return;
+    socket.to(roomId).emit('sign-caption', {
+      from: socket.id,
+      text: String(text || '').slice(0, 300),
+      final: !!final,
+    });
+  });
 });
 
 // ===== SERVE THE BUILT REACT APP =====

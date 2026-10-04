@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Copy, Check, X } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Copy, Check, X, Hand } from 'lucide-react';
 import socket from '../socket';
+import { startSignRecognition } from '../signRecognizer';
 import '../App.css';
 
 const ICE_SERVERS = {
@@ -48,6 +49,25 @@ function MeetingRoom() {
   const [hostLeftBanner, setHostLeftBanner] = useState(false);
   // peers: { [socketId]: MediaStream }
   const [peers, setPeers] = useState({});
+
+  // ===== Sign-language captions =====
+  const [signOn, setSignOn] = useState(false);
+  const [signLoading, setSignLoading] = useState(false);
+  const [signError, setSignError] = useState('');
+  const [caption, setCaption] = useState(null); // { from, text }
+  const captionTimerRef = useRef(null);
+
+  const showCaption = (from, text, final) => {
+    clearTimeout(captionTimerRef.current);
+    if (!text) {
+      setCaption(null);
+      return;
+    }
+    setCaption({ from, text });
+    if (final) {
+      captionTimerRef.current = setTimeout(() => setCaption(null), 6000);
+    }
+  };
 
   const stopMedia = () => {
     try {
@@ -194,9 +214,18 @@ function MeetingRoom() {
       setCallEnded(true);
       socket.disconnect();
     };
+
     const onHostLeft = () => {
       setHostLeftBanner(true);
-   };
+    };
+
+    // A caption arrived from another participant who is signing
+    const onSignCaption = ({ text, final }) => {
+      showCaption('Participant', text, final);
+      if (final && text && 'speechSynthesis' in window) {
+        window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+      }
+    };
 
     socket.on('connect', onConnect);
     socket.on('room-not-found', onRoomNotFound);
@@ -207,6 +236,7 @@ function MeetingRoom() {
     socket.on('user-left', onUserLeft);
     socket.on('call-ended', onCallEnded);
     socket.on('host-left', onHostLeft);
+    socket.on('sign-caption', onSignCaption);
 
     if (!socket.connected) socket.connect();
 
@@ -249,11 +279,54 @@ function MeetingRoom() {
       socket.off('user-left', onUserLeft);
       socket.off('call-ended', onCallEnded);
       socket.off('host-left', onHostLeft);
+      socket.off('sign-caption', onSignCaption);
       socket.disconnect();
       stopMedia();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
+
+  // Start / stop sign recognition when the hand button is toggled
+  useEffect(() => {
+    if (!signOn) {
+      setCaption(null);
+      return;
+    }
+    let cancelled = false;
+    let stop = null;
+    setSignLoading(true);
+    setSignError('');
+
+    startSignRecognition(localVideoRef.current, {
+      onUpdate: (text) => {
+        showCaption('You', text, false);
+        socket.emit('sign-caption', { text, final: false });
+      },
+      onSentence: (text) => {
+        showCaption('You', text, true);
+        socket.emit('sign-caption', { text, final: true });
+      },
+    })
+      .then((s) => {
+        if (cancelled) s();
+        else {
+          stop = s;
+          setSignLoading(false);
+        }
+      })
+      .catch((err) => {
+        console.error(err);
+        setSignError(`Sign recognition failed (${err.message})`);
+        setSignLoading(false);
+        setSignOn(false);
+      });
+
+    return () => {
+      cancelled = true;
+      if (stop) stop();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signOn]);
 
   const toggleMic = () => {
     if (streamRef.current) {
@@ -383,6 +456,30 @@ function MeetingRoom() {
         </button>
       )}
 
+      {signLoading && (
+        <p style={{ textAlign: 'center' }}>Loading sign recognition...</p>
+      )}
+      {signError && <p className="v3-error room-error">{signError}</p>}
+      {caption && (
+        <div
+          style={{
+            position: 'fixed',
+            left: '50%',
+            bottom: 100,
+            transform: 'translateX(-50%)',
+            background: 'rgba(0,0,0,0.8)',
+            color: '#fff',
+            padding: '10px 18px',
+            borderRadius: 12,
+            fontSize: 22,
+            maxWidth: '90%',
+            zIndex: 50,
+          }}
+        >
+          <strong>{caption.from}:</strong> {caption.text}
+        </div>
+      )}
+
       <div className="room-controls">
         <button
           className={`control-btn ${!micOn ? 'off' : ''}`}
@@ -395,6 +492,14 @@ function MeetingRoom() {
           onClick={toggleCam}
         >
           {camOn ? <Video size={20} /> : <VideoOff size={20} />}
+        </button>
+        <button
+          className="control-btn"
+          style={signOn ? { background: '#6c5ce7' } : undefined}
+          onClick={() => setSignOn((v) => !v)}
+          title="Sign language captions"
+        >
+          <Hand size={20} />
         </button>
         <button
           className="control-btn leave-btn"
