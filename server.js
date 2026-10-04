@@ -52,15 +52,16 @@ io.on('connection', (socket) => {
     console.log(`${socket.id} joined room ${roomId}`);
     socket.to(roomId).emit('user-joined', socket.id);
     emitRoomCount(roomId);
+    // Tell everyone in the room who the host is
+    io.to(roomId).emit('host-id', roomHosts.get(roomId) || null);
   });
 
-  // Host deliberately ends the call for everyone
+  // Host ends the meeting: others are asked whether to continue or leave
   socket.on('end-call', (ack) => {
     const roomId = socket.data.roomId;
     if (roomId && roomHosts.get(roomId) === socket.id) {
       console.log(`Host ${socket.id} ended room ${roomId}`);
-      socket.data.endedDeliberately = true;
-      socket.to(roomId).emit('call-ended');
+      socket.to(roomId).emit('host-ended');
       roomHosts.delete(roomId);
     }
     if (typeof ack === 'function') ack();
@@ -74,12 +75,9 @@ io.on('connection', (socket) => {
 
     if (wasHost) {
       roomHosts.delete(roomId);
-      // Host disappeared without pressing End Call — notify the room,
-      // but don't end the call for the people still there.
-      if (!socket.data.endedDeliberately) {
-        console.log(`Host ${socket.id} disconnected from room ${roomId} without ending the call`);
-        socket.to(roomId).emit('host-left');
-      }
+      // Host vanished (closed the tab) without pressing End Call
+      console.log(`Host ${socket.id} disconnected from room ${roomId} without ending the call`);
+      socket.to(roomId).emit('host-left');
     }
 
     console.log(`${socket.id} left room ${roomId}`);

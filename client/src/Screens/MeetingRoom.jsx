@@ -43,10 +43,11 @@ function MeetingRoom() {
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
   const [needsUnmute, setNeedsUnmute] = useState(false);
-  const [callEnded, setCallEnded] = useState(false);
+  const [hostEndedPopup, setHostEndedPopup] = useState(false);
   const [roomNotFound, setRoomNotFound] = useState(false);
   const [showStartPopup, setShowStartPopup] = useState(isHost);
   const [hostLeftBanner, setHostLeftBanner] = useState(false);
+  const [hostId, setHostId] = useState(null);
   // peers: { [socketId]: MediaStream }
   const [peers, setPeers] = useState({});
 
@@ -54,19 +55,24 @@ function MeetingRoom() {
   const [signOn, setSignOn] = useState(false);
   const [signLoading, setSignLoading] = useState(false);
   const [signError, setSignError] = useState('');
-  const [caption, setCaption] = useState(null); // { from, text }
+  const [caption, setCaption] = useState(null); // { fromId, text }  fromId = 'me' or a socket id
   const captionTimerRef = useRef(null);
 
-  const showCaption = (from, text, final) => {
+  const showCaption = (fromId, text, final) => {
     clearTimeout(captionTimerRef.current);
     if (!text) {
       setCaption(null);
       return;
     }
-    setCaption({ from, text });
+    setCaption({ fromId, text });
     if (final) {
       captionTimerRef.current = setTimeout(() => setCaption(null), 6000);
     }
+  };
+
+  const labelFor = (id) => {
+    if (id === 'me') return 'You';
+    return id === hostId ? 'Host' : 'Participant';
   };
 
   const stopMedia = () => {
@@ -208,20 +214,23 @@ function MeetingRoom() {
       });
     };
 
-    const onCallEnded = () => {
-      stopMedia();
-      setPeers({});
-      setCallEnded(true);
-      socket.disconnect();
+    // Host pressed End Call: ask the others whether to continue or leave
+    const onHostEnded = () => {
+      setHostEndedPopup(true);
     };
 
+    // Host closed the tab without pressing End Call
     const onHostLeft = () => {
       setHostLeftBanner(true);
     };
 
+    const onHostId = (id) => {
+      setHostId(id);
+    };
+
     // A caption arrived from another participant who is signing
-    const onSignCaption = ({ text, final }) => {
-      showCaption('Participant', text, final);
+    const onSignCaption = ({ from, text, final }) => {
+      showCaption(from, text, final);
       if (final && text && 'speechSynthesis' in window) {
         window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
       }
@@ -234,8 +243,9 @@ function MeetingRoom() {
     socket.on('answer', onAnswer);
     socket.on('ice-candidate', onIceCandidate);
     socket.on('user-left', onUserLeft);
-    socket.on('call-ended', onCallEnded);
+    socket.on('host-ended', onHostEnded);
     socket.on('host-left', onHostLeft);
+    socket.on('host-id', onHostId);
     socket.on('sign-caption', onSignCaption);
 
     if (!socket.connected) socket.connect();
@@ -277,8 +287,9 @@ function MeetingRoom() {
       socket.off('answer', onAnswer);
       socket.off('ice-candidate', onIceCandidate);
       socket.off('user-left', onUserLeft);
-      socket.off('call-ended', onCallEnded);
+      socket.off('host-ended', onHostEnded);
       socket.off('host-left', onHostLeft);
+      socket.off('host-id', onHostId);
       socket.off('sign-caption', onSignCaption);
       socket.disconnect();
       stopMedia();
@@ -299,11 +310,11 @@ function MeetingRoom() {
 
     startSignRecognition(localVideoRef.current, {
       onUpdate: (text) => {
-        showCaption('You', text, false);
+        showCaption('me', text, false);
         socket.emit('sign-caption', { text, final: false });
       },
       onSentence: (text) => {
-        showCaption('You', text, true);
+        showCaption('me', text, true);
         socket.emit('sign-caption', { text, final: true });
       },
     })
@@ -378,6 +389,15 @@ function MeetingRoom() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // Actually unmute the other people's videos (needed after autoplay was blocked)
+  const handleUnmute = () => {
+    document.querySelectorAll('video.remote-video').forEach((v) => {
+      v.muted = false;
+      v.play().catch(() => {});
+    });
+    setNeedsUnmute(false);
+  };
+
   if (roomNotFound) {
     return (
       <div className="room-container">
@@ -407,6 +427,7 @@ function MeetingRoom() {
   }
 
   const peerIds = Object.keys(peers);
+  const othersRemain = peerIds.filter((id) => id !== hostId).length > 0;
 
   return (
     <div className="room-container">
@@ -435,23 +456,21 @@ function MeetingRoom() {
       <div className="room-video-grid">
         <div className="video-tile">
           <video ref={localVideoRef} autoPlay playsInline muted />
-          <div className="video-label">You</div>
+          <div className="video-label">{isHost ? 'You (Host)' : 'You'}</div>
         </div>
 
         {peerIds.map((id) => (
           <RemoteVideo
             key={id}
             stream={peers[id]}
+            label={id === hostId ? 'Host' : 'Participant'}
             onNeedsUnmute={() => setNeedsUnmute(true)}
           />
         ))}
       </div>
 
       {needsUnmute && (
-        <button
-          className="unmute-btn-floating"
-          onClick={() => setNeedsUnmute(false)}
-        >
+        <button className="unmute-btn-floating" onClick={handleUnmute}>
           Tap to unmute
         </button>
       )}
@@ -465,8 +484,9 @@ function MeetingRoom() {
           style={{
             position: 'fixed',
             left: '50%',
-            bottom: 100,
+            bottom: 110,
             transform: 'translateX(-50%)',
+            pointerEvents: 'none',
             background: 'rgba(0,0,0,0.8)',
             color: '#fff',
             padding: '10px 18px',
@@ -476,11 +496,11 @@ function MeetingRoom() {
             zIndex: 50,
           }}
         >
-          <strong>{caption.from}:</strong> {caption.text}
+          <strong>{labelFor(caption.fromId)}:</strong> {caption.text}
         </div>
       )}
 
-      <div className="room-controls">
+      <div className="room-controls" style={{ zIndex: 100 }}>
         <button
           className={`control-btn ${!micOn ? 'off' : ''}`}
           onClick={toggleMic}
@@ -533,21 +553,34 @@ function MeetingRoom() {
         </div>
       )}
 
-      {callEnded && (
+      {hostEndedPopup && (
         <div className="modal-overlay">
           <div className="v3-ring code-modal-ring">
             <div className="v3-card ended-card">
               <div className="v3-logo" style={{ fontSize: 32 }}>
                 Connect<span>Sphere</span>
               </div>
-              <p className="ended-title">The call has been ended</p>
-              <p className="code-modal-text">The host ended this meeting.</p>
+              <p className="ended-title">The host ended the meeting</p>
+              <p className="code-modal-text">
+                {othersRemain
+                  ? 'You can keep talking with the other participants, or leave now.'
+                  : 'There is no one else in the meeting.'}
+              </p>
+              {othersRemain && (
+                <button
+                  className="v3-btn"
+                  style={{ width: '100%', marginBottom: 10 }}
+                  onClick={() => setHostEndedPopup(false)}
+                >
+                  Continue
+                </button>
+              )}
               <button
                 className="v3-btn"
                 style={{ width: '100%' }}
-                onClick={() => navigate('/home')}
+                onClick={finishLeave}
               >
-                Back to Home
+                Leave meeting
               </button>
             </div>
           </div>
@@ -559,7 +592,7 @@ function MeetingRoom() {
 
 // A small dedicated component per remote participant, so each one
 // gets its own <video> element and its own play()/unmute handling.
-function RemoteVideo({ stream, onNeedsUnmute }) {
+function RemoteVideo({ stream, label, onNeedsUnmute }) {
   const videoRef = useRef(null);
 
   useEffect(() => {
@@ -576,8 +609,8 @@ function RemoteVideo({ stream, onNeedsUnmute }) {
 
   return (
     <div className="video-tile">
-      <video ref={videoRef} autoPlay playsInline />
-      <div className="video-label">Participant</div>
+      <video ref={videoRef} className="remote-video" autoPlay playsInline />
+      <div className="video-label">{label}</div>
     </div>
   );
 }
