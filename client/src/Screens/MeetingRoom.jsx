@@ -2,7 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Mic, MicOff, Video, VideoOff, PhoneOff, Copy, Check, X, Hand } from 'lucide-react';
 import socket from '../socket';
-import { startSignRecognition } from '../signRecognizer';
+import {
+  startSignRecognition,
+  preloadSignRecognition,
+  disposeSignRecognition,
+} from '../signRecognizer';
 import '../App.css';
 
 const ICE_SERVERS = {
@@ -228,11 +232,12 @@ function MeetingRoom() {
       setHostId(id);
     };
 
-    // A caption arrived from another participant who is signing
-    const onSignCaption = ({ from, text, final }) => {
+    // A caption arrived from another participant who is signing.
+    // Each new word is spoken right away.
+    const onSignCaption = ({ from, text, final, word }) => {
       showCaption(from, text, final);
-      if (final && text && 'speechSynthesis' in window) {
-        window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+      if (word && 'speechSynthesis' in window) {
+        window.speechSynthesis.speak(new SpeechSynthesisUtterance(word));
       }
     };
 
@@ -297,6 +302,14 @@ function MeetingRoom() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
+  // Load the sign model in the background as soon as the room opens
+  useEffect(() => {
+    preloadSignRecognition().catch((err) =>
+      console.error('Sign preload failed:', err)
+    );
+    return () => disposeSignRecognition();
+  }, []);
+
   // Start / stop sign recognition when the hand button is toggled
   useEffect(() => {
     if (!signOn) {
@@ -309,9 +322,9 @@ function MeetingRoom() {
     setSignError('');
 
     startSignRecognition(localVideoRef.current, {
-      onUpdate: (text) => {
+      onUpdate: (text, word) => {
         showCaption('me', text, false);
-        socket.emit('sign-caption', { text, final: false });
+        socket.emit('sign-caption', { text, final: false, word });
       },
       onSentence: (text) => {
         showCaption('me', text, true);
