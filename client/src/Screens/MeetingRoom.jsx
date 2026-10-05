@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Copy, Check, X, Hand } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Copy, Check, X, Hand, MessageSquare } from 'lucide-react';
 import socket from '../socket';
+import { startSpeechRecognition } from '../speechRecognizer';
 import {
   startSignRecognition,
   preloadSignRecognition,
@@ -61,6 +62,10 @@ function MeetingRoom() {
   const [signError, setSignError] = useState('');
   const [caption, setCaption] = useState(null); // { fromId, text }  fromId = 'me' or a socket id
   const captionTimerRef = useRef(null);
+
+  // ===== Live transcript =====
+  const [speechOn, setSpeechOn] = useState(false);
+  const [transcript, setTranscript] = useState([]);
 
   const showCaption = (fromId, text, final) => {
     clearTimeout(captionTimerRef.current);
@@ -241,6 +246,11 @@ function MeetingRoom() {
       }
     };
 
+    // A line was added to the live transcript (speech or sign)
+    const onTranscriptLine = (entry) => {
+      setTranscript((prev) => [...prev.slice(-199), entry]);
+    };
+
     socket.on('connect', onConnect);
     socket.on('room-not-found', onRoomNotFound);
     socket.on('user-joined', onUserJoined);
@@ -252,12 +262,13 @@ function MeetingRoom() {
     socket.on('host-left', onHostLeft);
     socket.on('host-id', onHostId);
     socket.on('sign-caption', onSignCaption);
+    socket.on('transcript-line', onTranscriptLine);
 
     if (!socket.connected) socket.connect();
 
     const startCamera = async () => {
       try {
-                const localStream = await navigator.mediaDevices.getUserMedia({
+        const localStream = await navigator.mediaDevices.getUserMedia({
           video: {
             width: { ideal: 640 },
             height: { ideal: 480 },
@@ -300,6 +311,7 @@ function MeetingRoom() {
       socket.off('host-left', onHostLeft);
       socket.off('host-id', onHostId);
       socket.off('sign-caption', onSignCaption);
+      socket.off('transcript-line', onTranscriptLine);
       socket.disconnect();
       stopMedia();
     };
@@ -313,6 +325,19 @@ function MeetingRoom() {
     );
     return () => disposeSignRecognition();
   }, []);
+
+  // Listen to my voice and send what I say to the transcript
+  useEffect(() => {
+    if (!speechOn || !micOn) return;
+    const stop = startSpeechRecognition({
+      onFinal: (text) => socket.emit('transcript-line', { text, kind: 'speech' }),
+      onError: (msg) => {
+        setSignError(msg);
+        setSpeechOn(false);
+      },
+    });
+    return stop;
+  }, [speechOn, micOn]);
 
   // Start / stop sign recognition when the hand button is toggled
   useEffect(() => {
@@ -517,6 +542,43 @@ function MeetingRoom() {
         </div>
       )}
 
+      {speechOn && (
+        <div
+          style={{
+            position: 'fixed',
+            right: 12,
+            top: 70,
+            width: 300,
+            maxWidth: '85%',
+            maxHeight: '40vh',
+            overflowY: 'auto',
+            background: 'rgba(0,0,0,0.85)',
+            color: '#fff',
+            padding: 10,
+            borderRadius: 12,
+            fontSize: 14,
+            zIndex: 40,
+          }}
+        >
+          <strong>Live transcript</strong>
+          {transcript.length === 0 && (
+            <p style={{ opacity: 0.6 }}>Say something...</p>
+          )}
+          {transcript.map((t, i) => (
+            <p key={i} style={{ margin: '6px 0' }}>
+              <b>
+                {t.from === socket.id
+                  ? 'You'
+                  : t.from === hostId
+                  ? 'Host'
+                  : 'Participant'}
+              </b>
+              {t.kind === 'sign' ? ' (sign)' : ''}: {t.text}
+            </p>
+          ))}
+        </div>
+      )}
+
       <div className="room-controls" style={{ zIndex: 100 }}>
         <button
           className={`control-btn ${!micOn ? 'off' : ''}`}
@@ -529,6 +591,14 @@ function MeetingRoom() {
           onClick={toggleCam}
         >
           {camOn ? <Video size={20} /> : <VideoOff size={20} />}
+        </button>
+        <button
+          className="control-btn"
+          style={speechOn ? { background: '#6c5ce7' } : undefined}
+          onClick={() => setSpeechOn((v) => !v)}
+          title="Live transcript"
+        >
+          <MessageSquare size={20} />
         </button>
         <button
           className="control-btn"
