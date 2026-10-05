@@ -257,8 +257,12 @@ function MeetingRoom() {
 
     const startCamera = async () => {
       try {
-        const localStream = await navigator.mediaDevices.getUserMedia({
-          video: true,
+                const localStream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            frameRate: { ideal: 24 },
+          },
           audio: true,
         });
 
