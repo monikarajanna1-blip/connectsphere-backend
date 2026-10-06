@@ -28,15 +28,17 @@ const emitRoomCount = (roomId) => {
   const size = io.sockets.adapter.rooms.get(roomId)?.size || 0;
   io.to(roomId).emit('room-count', size);
 };
+
+// ===== MEETING TRANSCRIPT (kept quietly for the summary) =====
 const roomTranscripts = new Map(); // roomId -> [{ from, kind, text, time }]
 
 const addTranscript = (roomId, from, kind, text) => {
   const clean = String(text || '').trim().slice(0, 500);
   if (!clean) return;
   const entry = { from, kind, text: clean, time: Date.now() };
+  console.log('TRANSCRIPT', roomId, from, kind, clean);
   if (!roomTranscripts.has(roomId)) roomTranscripts.set(roomId, []);
   roomTranscripts.get(roomId).push(entry);
-  io.to(roomId).emit('transcript-line', entry);
 };
 
 io.on('connection', (socket) => {
@@ -106,14 +108,16 @@ io.on('connection', (socket) => {
   socket.on('ice-candidate', ({ to, candidate }) => {
     io.to(to).emit('ice-candidate', { from: socket.id, candidate });
   });
-  // Spoken sentence from a participant's browser
+
+  // Spoken sentence from a participant's browser (saved, not shown)
   socket.on('transcript-line', ({ text, kind }) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
     addTranscript(roomId, socket.id, kind === 'sign' ? 'sign' : 'speech', text);
   });
+
   // Relay sign-language captions to everyone else in the room
-    socket.on('sign-caption', ({ text, final, word }) => {
+  socket.on('sign-caption', ({ text, final, word }) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
     socket.to(roomId).emit('sign-caption', {
@@ -122,6 +126,7 @@ io.on('connection', (socket) => {
       final: !!final,
       word,
     });
+    // finished signed sentences also go into the transcript
     if (final && text) addTranscript(roomId, socket.id, 'sign', text);
   });
 });
