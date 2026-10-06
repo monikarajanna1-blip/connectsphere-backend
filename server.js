@@ -6,6 +6,7 @@ const { Server } = require('socket.io');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const authRoutes = require('./routes/auth');
+const Meeting = require('./models/Meeting');
 
 const app = express();
 const server = http.createServer(app);
@@ -23,22 +24,31 @@ app.use('/api/auth', authRoutes);
 
 // ===== SOCKET.IO SIGNALING =====
 const roomHosts = new Map(); // roomId -> socket.id of the host
+const roomMeetings = new Map(); // roomId -> Meeting _id in MongoDB
 
 const emitRoomCount = (roomId) => {
   const size = io.sockets.adapter.rooms.get(roomId)?.size || 0;
   io.to(roomId).emit('room-count', size);
 };
 
-// ===== MEETING TRANSCRIPT (kept quietly for the summary) =====
-const roomTranscripts = new Map(); // roomId -> [{ from, kind, text, time }]
-
-const addTranscript = (roomId, from, kind, text) => {
+// ===== MEETING TRANSCRIPT (saved quietly for the summary) =====
+const addTranscript = (roomId, socketId, kind, text) => {
   const clean = String(text || '').trim().slice(0, 500);
   if (!clean) return;
-  const entry = { from, kind, text: clean, time: Date.now() };
-  console.log('TRANSCRIPT', roomId, from, kind, clean);
-  if (!roomTranscripts.has(roomId)) roomTranscripts.set(roomId, []);
-  roomTranscripts.get(roomId).push(entry);
+  const entry = {
+    from: socketId,
+    role: roomHosts.get(roomId) === socketId ? 'Host' : 'Participant',
+    kind,
+    text: clean,
+    time: Date.now(),
+  };
+  console.log('TRANSCRIPT', roomId, entry.role, kind, clean);
+  const meetingId = roomMeetings.get(roomId);
+  if (meetingId) {
+    Meeting.updateOne({ _id: meetingId }, { $push: { lines: entry } }).catch((err) =>
+      console.error('Saving transcript line failed:', err.message)
+    );
+  }
 };
 
 io.on('connection', (socket) => {
@@ -51,8 +61,13 @@ io.on('connection', (socket) => {
     if (payload.isHost) {
       if (!roomHosts.has(roomId)) {
         roomHosts.set(roomId, socket.id);
+        if (!roomMeetings.has(roomId)) {
+          Meeting.create({ roomId })
+            .then((m) => roomMeetings.set(roomId, m._id))
+            .catch((err) => console.error('Creating meeting failed:', err.message));
+        }
       }
-    } else if (!roomHosts.has(roomId)) {
+    } else if (!roomHosts.has(roomId) && !roomMeetings.has(roomId)) {
       console.log(`${socket.id} tried to join nonexistent room ${roomId}`);
       socket.emit('room-not-found');
       return;
@@ -64,7 +79,6 @@ io.on('connection', (socket) => {
     console.log(`${socket.id} joined room ${roomId}`);
     socket.to(roomId).emit('user-joined', socket.id);
     emitRoomCount(roomId);
-    // Tell everyone in the room who the host is
     io.to(roomId).emit('host-id', roomHosts.get(roomId) || null);
   });
 
@@ -87,7 +101,6 @@ io.on('connection', (socket) => {
 
     if (wasHost) {
       roomHosts.delete(roomId);
-      // Host vanished (closed the tab) without pressing End Call
       console.log(`Host ${socket.id} disconnected from room ${roomId} without ending the call`);
       socket.to(roomId).emit('host-left');
     }
@@ -95,6 +108,18 @@ io.on('connection', (socket) => {
     console.log(`${socket.id} left room ${roomId}`);
     socket.to(roomId).emit('user-left', socket.id);
     emitRoomCount(roomId);
+
+    // When the room is empty the meeting is over: mark it as ended
+    const remaining = io.sockets.adapter.rooms.get(roomId)?.size || 0;
+    if (remaining === 0) {
+      const meetingId = roomMeetings.get(roomId);
+      roomMeetings.delete(roomId);
+      if (meetingId) {
+        Meeting.updateOne({ _id: meetingId }, { endedAt: new Date() }).catch((err) =>
+          console.error('Closing meeting failed:', err.message)
+        );
+      }
+    }
   });
 
   socket.on('offer', ({ to, offer }) => {
@@ -126,8 +151,8 @@ io.on('connection', (socket) => {
       final: !!final,
       word,
     });
-    // finished signed sentences also go into the transcript
     if (word) console.log('SIGN WORD', roomId, word);
+    // finished signed sentences also go into the transcript
     if (final && text) addTranscript(roomId, socket.id, 'sign', text);
   });
 });
