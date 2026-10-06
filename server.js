@@ -7,7 +7,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const authRoutes = require('./routes/auth');
 const Meeting = require('./models/Meeting');
-
+const { buildSummary } = require('./summary');
 const app = express();
 const server = http.createServer(app);
 
@@ -157,6 +157,24 @@ io.on('connection', (socket) => {
   });
 });
 
+// Meeting summary: the latest meeting that used this room code
+app.get('/api/meetings/:roomId/summary', async (req, res) => {
+  try {
+    const m = await Meeting.findOne({ roomId: req.params.roomId })
+      .sort({ startedAt: -1 })
+      .lean();
+    if (!m) return res.status(404).json({ error: 'Meeting not found' });
+    res.json({
+      roomId: m.roomId,
+      startedAt: m.startedAt,
+      endedAt: m.endedAt || null,
+      ...buildSummary(m.lines || []),
+    });
+  } catch (err) {
+    console.error('Summary failed:', err.message);
+    res.status(500).json({ error: 'Could not build summary' });
+  }
+});
 // ===== SERVE THE BUILT REACT APP =====
 app.use(express.static(path.join(__dirname, 'client/dist')));
 
