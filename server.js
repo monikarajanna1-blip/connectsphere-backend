@@ -127,6 +127,7 @@ io.on('connection', (socket) => {
       word,
     });
     // finished signed sentences also go into the transcript
+    if (word) console.log('SIGN WORD', roomId, word);
     if (final && text) addTranscript(roomId, socket.id, 'sign', text);
   });
 });

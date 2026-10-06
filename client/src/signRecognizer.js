@@ -15,7 +15,7 @@ const AVG_WINDOW = 2;
 const MIN_CONF = 0.55;
 const STABLE_NEEDED = 2;
 const HAND_LOST_MS = 400;
-const SENTENCE_PAUSE_MS = 1200;
+const SENTENCE_PAUSE_MS = 700;
 
 const SAY = { thankyou: 'thank you', haveto: 'have to', minemy: 'my' };
 const spoken = (w) => SAY[w] || w;
