@@ -31,6 +31,37 @@ const ICE_SERVERS = {
   ],
 };
 
+// Turn the summary data from the server into a readable text file
+function formatSummary(d) {
+  const out = [];
+  out.push('CONNECTSPHERE - MEETING SUMMARY');
+  out.push(`Room: ${d.roomId}`);
+  out.push(`Started: ${new Date(d.startedAt).toLocaleString()}`);
+  if (d.endedAt) out.push(`Ended: ${new Date(d.endedAt).toLocaleString()}`);
+  out.push('');
+  out.push('KEYWORDS');
+  out.push(d.keywords.length ? d.keywords.join(', ') : '(none)');
+  out.push('');
+  out.push('SUMMARY');
+  if (d.summary.length) d.summary.forEach((s) => out.push(`- ${s}`));
+  else out.push('(nothing was recorded)');
+  out.push('');
+  out.push('ACTION ITEMS');
+  if (d.actionItems.length) d.actionItems.forEach((a) => out.push(`- ${a.who}: ${a.text}`));
+  else out.push('(none found)');
+  out.push('');
+  out.push('FULL TRANSCRIPT');
+  if (d.transcript.length) {
+    d.transcript.forEach((t) => {
+      const time = t.time ? new Date(t.time).toLocaleTimeString() : '';
+      out.push(`[${time}] ${t.role}${t.kind === 'sign' ? ' (sign)' : ''}: ${t.text}`);
+    });
+  } else {
+    out.push('(empty)');
+  }
+  return out.join('\n');
+}
+
 function MeetingRoom() {
   const { roomId } = useParams();
   const navigate = useNavigate();
@@ -65,6 +96,11 @@ function MeetingRoom() {
 
   // ===== Silent speech transcription (saved for the summary, not shown) =====
   const [speechOn, setSpeechOn] = useState(true);
+
+  // ===== End-of-meeting summary popup =====
+  const [summaryPopup, setSummaryPopup] = useState(false);
+  const [summaryBusy, setSummaryBusy] = useState(false);
+  const [summaryError, setSummaryError] = useState('');
 
   const showCaption = (fromId, text, final) => {
     clearTimeout(captionTimerRef.current);
@@ -310,12 +346,21 @@ function MeetingRoom() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
-  // Load the sign model in the background as soon as the room opens
+  // Load the sign model in the background a few seconds after the room opens
+  // (skipped in Firefox, where it is heavy; it loads when the hand button is pressed)
   useEffect(() => {
-    preloadSignRecognition().catch((err) =>
-      console.error('Sign preload failed:', err)
-    );
-    return () => disposeSignRecognition();
+    const isFirefox = navigator.userAgent.includes('Firefox');
+    const timer = isFirefox
+      ? null
+      : setTimeout(() => {
+          preloadSignRecognition().catch((err) =>
+            console.error('Sign preload failed:', err)
+          );
+        }, 5000);
+    return () => {
+      clearTimeout(timer);
+      disposeSignRecognition();
+    };
   }, []);
 
   // Silently listen to my voice and send each sentence to the server.
@@ -392,6 +437,7 @@ function MeetingRoom() {
     }
   };
 
+  // Go back to the home screen
   const finishLeave = () => {
     stopMedia();
     try {
@@ -402,19 +448,59 @@ function MeetingRoom() {
     navigate('/home');
   };
 
+  // Leave the call and ask whether to download the summary
+  const endAndShowSummary = () => {
+    setSpeechOn(false); // stops listening; the last sentence is flushed
+    setSignOn(false);
+    setHostEndedPopup(false);
+    setShowStartPopup(false);
+    stopMedia();
+    // keep the connection a moment so the last spoken line still reaches the server
+    setTimeout(() => {
+      try {
+        socket.disconnect();
+      } catch (err) {
+        console.error(err);
+      }
+    }, 1500);
+    setSummaryPopup(true);
+  };
+
+  const downloadSummary = async () => {
+    setSummaryBusy(true);
+    setSummaryError('');
+    try {
+      // give the server a moment to save the last lines
+      await new Promise((r) => setTimeout(r, 2000));
+      const res = await fetch(`/api/meetings/${roomId}/summary`);
+      if (!res.ok) throw new Error('The summary is not available yet. Try again.');
+      const data = await res.json();
+      const blob = new Blob([formatSummary(data)], { type: 'text/plain' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `meeting-summary-${roomId}.txt`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      navigate('/home');
+    } catch (err) {
+      setSummaryError(err.message);
+      setSummaryBusy(false);
+    }
+  };
+
   const handleLeave = () => {
     if (isHost && socket.connected) {
       let done = false;
       const go = () => {
         if (!done) {
           done = true;
-          finishLeave();
+          endAndShowSummary();
         }
       };
       socket.emit('end-call', go);
       setTimeout(go, 800);
     } else {
-      finishLeave();
+      endAndShowSummary();
     }
   };
 
@@ -592,7 +678,7 @@ function MeetingRoom() {
         </div>
       )}
 
-      {hostEndedPopup && (
+      {hostEndedPopup && !summaryPopup && (
         <div className="modal-overlay">
           <div className="v3-ring code-modal-ring">
             <div className="v3-card ended-card">
@@ -617,9 +703,42 @@ function MeetingRoom() {
               <button
                 className="v3-btn"
                 style={{ width: '100%' }}
-                onClick={finishLeave}
+                onClick={endAndShowSummary}
               >
                 Leave meeting
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {summaryPopup && (
+        <div className="modal-overlay">
+          <div className="v3-ring code-modal-ring">
+            <div className="v3-card ended-card">
+              <div className="v3-logo" style={{ fontSize: 32 }}>
+                Connect<span>Sphere</span>
+              </div>
+              <p className="ended-title">Meeting ended</p>
+              <p className="code-modal-text">
+                Do you want to download the meeting summary and full transcript?
+              </p>
+              {summaryError && <p className="v3-error">{summaryError}</p>}
+              <button
+                className="v3-btn"
+                style={{ width: '100%', marginBottom: 10 }}
+                onClick={downloadSummary}
+                disabled={summaryBusy}
+              >
+                {summaryBusy ? 'Preparing...' : 'Download'}
+              </button>
+              <button
+                className="v3-btn"
+                style={{ width: '100%' }}
+                onClick={finishLeave}
+                disabled={summaryBusy}
+              >
+                Cancel
               </button>
             </div>
           </div>
