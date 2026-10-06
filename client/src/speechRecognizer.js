@@ -7,24 +7,56 @@ export function startSpeechRecognition({ onFinal, onError, lang = 'en-IN' }) {
   }
 
   let active = true;
-  let failures = 0; // errors in a row without any recognised speech
+  let failures = 0;
   let restartTimer = null;
+  let flushTimer = null;
   let rec = null;
+  let pending = ''; // what the browser has heard but not yet finalised
+
+  const send = (text) => {
+    const clean = text.trim();
+    if (!clean) return;
+    console.log('Heard:', clean);
+    onFinal(clean);
+  };
+
+  // Send whatever is pending, then restart so the next sentence starts clean
+  const flush = () => {
+    if (pending) {
+      send(pending);
+      pending = '';
+      try {
+        rec?.stop(); // onend will restart listening
+      } catch (e) {
+        /* ignore */
+      }
+    }
+  };
 
   const begin = () => {
     if (!active) return;
     rec = new SR();
     rec.continuous = true;
-    rec.interimResults = false;
+    rec.interimResults = true;
     rec.lang = lang;
 
     rec.onresult = (e) => {
       failures = 0;
+      clearTimeout(flushTimer);
+      let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) {
-          const text = e.results[i][0].transcript.trim();
-          if (text) onFinal(text);
+        const r = e.results[i];
+        if (r.isFinal) {
+          pending = '';
+          send(r[0].transcript);
+        } else {
+          interim += r[0].transcript;
         }
+      }
+      if (interim) {
+        pending = interim;
+        // if the browser does not finalise soon, send it ourselves
+        flushTimer = setTimeout(flush, 1500);
       }
     };
 
@@ -35,7 +67,6 @@ export function startSpeechRecognition({ onFinal, onError, lang = 'en-IN' }) {
         onError?.('Microphone permission is blocked for speech recognition.');
         return;
       }
-      // "no-speech" and "aborted" are normal; anything else counts as a failure
       if (e.error !== 'no-speech' && e.error !== 'aborted') failures++;
       if (failures >= 5) {
         active = false;
@@ -43,10 +74,14 @@ export function startSpeechRecognition({ onFinal, onError, lang = 'en-IN' }) {
       }
     };
 
-    // The browser stops listening after a pause, so restart, but with a delay
     rec.onend = () => {
+      clearTimeout(flushTimer);
+      if (pending) {
+        send(pending);
+        pending = '';
+      }
       if (!active) return;
-      const delay = Math.min(5000, 400 + failures * 800);
+      const delay = failures ? Math.min(5000, 400 + failures * 800) : 100;
       restartTimer = setTimeout(begin, delay);
     };
 
@@ -62,6 +97,7 @@ export function startSpeechRecognition({ onFinal, onError, lang = 'en-IN' }) {
   return () => {
     active = false;
     clearTimeout(restartTimer);
+    clearTimeout(flushTimer);
     try {
       rec?.stop();
     } catch (err) {
