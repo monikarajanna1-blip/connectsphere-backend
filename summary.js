@@ -4,15 +4,14 @@ const STOP = new Set(
     'do does did done have has had will would can could should must may might shall not no yes ok okay ' +
     'just very really also than too up down out over again more most some any all each other such ' +
     'am im ill ive well like get got going gonna one two hello hi thanks thank please ' +
-    "we'll i'll you'll that's it's what's here's let's don't can't guys tell show going")
+        "we'll i'll you'll that's it's what's here's let's don't can't guys tell show going yeah note")
     .split(' ')
 );
 
 const ACTION_RE =
   /\b(i will|i'll|we will|we'll|need to|needs to|have to|has to|must|should|remind|assign|deadline|follow up|send|finish|complete|submit|prepare|schedule|by (monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|tonight|next week|end of))\b/i;
 
-const QUESTION_START = /^(what|why|how|when|where|who|can|could|will|would|do|does|did|is|are|should)\b/i;
-
+const QUESTION_START = /^(what|why|how|when|where|who|can|could|will|would|do|does|did|is|are|should|have|has|had)\b/i;
 const words = (s) =>
   s.toLowerCase().replace(/[^a-z\s']/g, ' ').split(/\s+/).filter(Boolean);
 
