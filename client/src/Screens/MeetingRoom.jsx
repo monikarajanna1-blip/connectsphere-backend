@@ -258,8 +258,12 @@ function MeetingRoom() {
       socket.emit('offer', { to: remoteId, offer });
     };
 
-    const joinRoom = () => socket.emit('join-room', { roomId, isHost });
-
+    const joinRoom = () =>
+      socket.emit('join-room', {
+        roomId,
+        isHost,
+        token: localStorage.getItem('token'),
+      });
     const onConnect = () => {
       if (streamRef.current) joinRoom();
     };

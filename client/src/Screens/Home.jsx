@@ -8,12 +8,17 @@ import {
   ShieldCheck,
   LogOut,
   Sparkles,
+  Download,
 } from 'lucide-react';
+import { meetingsApi } from '../api';
+import { formatSummary, downloadText, fmtDur } from '../formatSummary';
 import '../App.css';
 
 function Home() {
   const [user, setUser] = useState(null);
   const [joinCode, setJoinCode] = useState('');
+  const [recent, setRecent] = useState([]);
+  const [recentLoading, setRecentLoading] = useState(true);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -25,14 +30,24 @@ function Home() {
     setUser(JSON.parse(storedUser));
   }, [navigate]);
 
+  // Load the user's latest meetings
+  useEffect(() => {
+    if (!user) return;
+    meetingsApi
+      .get('/my-meetings')
+      .then((res) => setRecent(res.data.meetings.slice(0, 5)))
+      .catch(() => {})
+      .finally(() => setRecentLoading(false));
+  }, [user]);
+
   const handleLogout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     navigate('/login');
   };
 
-  const handleStartMeeting = () => { 
-    const roomId = Math.random().toString(36).substring(2, 9); 
+  const handleStartMeeting = () => {
+    const roomId = Math.random().toString(36).substring(2, 9);
     navigate(`/meeting/${roomId}`, { state: { isHost: true } });
   };
 
@@ -43,8 +58,17 @@ function Home() {
     }
   };
 
+  const handleDownload = async (m) => {
+    try {
+      const res = await meetingsApi.get(`/my-meetings/${m.id}`);
+      downloadText(`meeting-summary-${m.roomId}.txt`, formatSummary(res.data));
+    } catch (err) {
+      alert('Could not download this summary. Please try again.');
+    }
+  };
+
   const handleSchedule = () => alert('Schedule Meeting — coming soon');
-  const handleInsights = () => alert('Meeting Insights — coming soon');
+  const handleInsights = () => navigate('/insights');
   const handleAccessibility = () => alert('Accessibility Settings — coming soon');
 
   if (!user) return null;
@@ -136,9 +160,54 @@ function Home() {
         </div>
 
         <div className="section-title">Recent Meetings</div>
-        <div className="empty-state">
-          No meetings yet. Start your first meeting above.
-        </div>
+        {recentLoading && <div className="empty-state">Loading...</div>}
+        {!recentLoading && recent.length === 0 && (
+          <div className="empty-state">
+            No meetings yet. Start your first meeting above.
+          </div>
+        )}
+        {recent.map((m) => (
+          <div
+            key={m.id}
+            className="glass-card"
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: 10,
+              padding: '14px 18px',
+              cursor: 'pointer',
+            }}
+            onClick={() => navigate(`/insights/${m.id}`)}
+          >
+            <div>
+              <strong>
+                {new Date(m.startedAt).toLocaleString([], {
+                  day: 'numeric',
+                  month: 'short',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </strong>
+              <div style={{ opacity: 0.7, fontSize: 13, marginTop: 3 }}>
+                {m.wasHost ? 'You hosted' : 'You joined'} · Code {m.roomId}
+                {m.endedAt
+                  ? ` · ${fmtDur(new Date(m.endedAt) - new Date(m.startedAt))}`
+                  : ''}
+              </div>
+            </div>
+            <button
+              className="logout-btn"
+              title="Download summary"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDownload(m);
+              }}
+            >
+              <Download size={16} />
+            </button>
+          </div>
+        ))}
       </div>
     </div>
   );

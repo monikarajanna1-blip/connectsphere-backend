@@ -29,6 +29,8 @@ const participantSchema = new mongoose.Schema(
 
 const meetingSchema = new mongoose.Schema({
   roomId: { type: String, index: true },
+  hostId: { type: mongoose.Schema.Types.ObjectId },
+  memberIds: { type: [mongoose.Schema.Types.ObjectId], index: true },
   startedAt: { type: Date, default: Date.now },
   endedAt: Date,
   lines: [lineSchema],

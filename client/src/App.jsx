@@ -8,6 +8,7 @@ import ResetPassword from './Screens/ResetPassword';
 import MeetingRoom from './Screens/MeetingRoom';
 import SignCollector from "./Screens/SignCollector";
 import SignTest from "./Screens/SignTest";
+import Insights from './Screens/Insights';
 function App() {
   return (
     <BrowserRouter>
@@ -21,6 +22,8 @@ function App() {
         <Route path="/meeting/:roomId" element={<MeetingRoom />} />
         <Route path="/collect" element={<SignCollector />} />
         <Route path="/signtest" element={<SignTest />} />
+        <Route path="/insights" element={<Insights />} />
+        <Route path="/insights/:id" element={<Insights />} />
       </Routes>
     </BrowserRouter>
   );

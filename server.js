@@ -5,6 +5,7 @@ const path = require('path');
 const { Server } = require('socket.io');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
 const authRoutes = require('./routes/auth');
 const Meeting = require('./models/Meeting');
 const { buildSummary } = require('./summary');
@@ -23,6 +24,24 @@ app.use(express.json());
 
 app.use('/api/auth', authRoutes);
 
+// ===== LOGIN CHECK =====
+const userIdFromToken = (token) => {
+  try {
+    return jwt.verify(token, process.env.JWT_SECRET).userId;
+  } catch (err) {
+    return null;
+  }
+};
+
+const requireAuth = (req, res, next) => {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const userId = token && userIdFromToken(token);
+  if (!userId) return res.status(401).json({ error: 'Please log in again' });
+  req.userId = String(userId);
+  next();
+};
+
 // ===== SOCKET.IO SIGNALING =====
 const roomHosts = new Map(); // roomId -> socket.id of the host
 const roomMeetings = new Map(); // roomId -> Meeting _id in MongoDB
@@ -31,6 +50,20 @@ const roomStats = new Map(); // roomId -> Map(socketId -> engagement stats)
 const emitRoomCount = (roomId) => {
   const size = io.sockets.adapter.rooms.get(roomId)?.size || 0;
   io.to(roomId).emit('room-count', size);
+};
+
+// Remember that this account took part in the meeting
+const linkMember = (roomId, userId, attempt = 0) => {
+  if (!userId) return;
+  const meetingId = roomMeetings.get(roomId);
+  if (!meetingId) {
+    // the meeting record may still be being created: try again shortly
+    if (attempt < 3) setTimeout(() => linkMember(roomId, userId, attempt + 1), 1000);
+    return;
+  }
+  Meeting.updateOne({ _id: meetingId }, { $addToSet: { memberIds: userId } }).catch((err) =>
+    console.error('Linking member failed:', err.message)
+  );
 };
 
 // ===== ENGAGEMENT STATS =====
@@ -84,12 +117,17 @@ io.on('connection', (socket) => {
   socket.on('join-room', (raw) => {
     const payload = typeof raw === 'object' && raw !== null ? raw : { roomId: raw };
     const roomId = String(payload.roomId).trim();
+    const userId = payload.token ? userIdFromToken(payload.token) : null;
 
     if (payload.isHost) {
       if (!roomHosts.has(roomId)) {
         roomHosts.set(roomId, socket.id);
         if (!roomMeetings.has(roomId)) {
-          Meeting.create({ roomId })
+          Meeting.create({
+            roomId,
+            hostId: userId || undefined,
+            memberIds: userId ? [userId] : [],
+          })
             .then((m) => roomMeetings.set(roomId, m._id))
             .catch((err) => console.error('Creating meeting failed:', err.message));
         }
@@ -103,6 +141,9 @@ io.on('connection', (socket) => {
     socket.data.roomId = roomId;
     socket.join(roomId);
 
+    // link this account to the meeting (the host was linked when it was created)
+    if (!payload.isHost) linkMember(roomId, userId);
+
     // start tracking this person's engagement (join-room can arrive twice)
     if (!roomStats.has(roomId)) roomStats.set(roomId, new Map());
     if (!roomStats.get(roomId).has(socket.id)) {
@@ -113,6 +154,7 @@ io.on('connection', (socket) => {
         joinedAt: now,
         leftAt: null,
         speakingMs: 0,
+        estMs: 0,
         micOn: true,
         micSince: now,
         micOnMs: 0,
@@ -120,7 +162,6 @@ io.on('connection', (socket) => {
         speechLines: 0,
         signLines: 0,
         words: 0,
-        estMs: 0,
       });
     }
 
@@ -249,30 +290,74 @@ io.on('connection', (socket) => {
   });
 });
 
-// Meeting summary: the latest meeting that used this room code
+// ===== MEETING REPORTS =====
+// Build the full report (summary + engagement) for one saved meeting
+const reportFor = (m) => {
+  const now = Date.now();
+  const stats = [...(m.participants || [])];
+  // people still in the meeting are not saved yet, so add their live numbers
+  const liveId = roomMeetings.get(m.roomId);
+  if (liveId && String(liveId) === String(m._id)) {
+    roomStats.get(m.roomId)?.forEach((st) => stats.push(snapshotStat(st, now)));
+  }
+  return {
+    id: String(m._id),
+    roomId: m.roomId,
+    startedAt: m.startedAt,
+    endedAt: m.endedAt || null,
+    ...buildSummary(m.lines || [], m.startedAt, m.endedAt, stats, now),
+  };
+};
+
+// Used by the "download summary" popup at the end of a meeting
 app.get('/api/meetings/:roomId/summary', async (req, res) => {
   try {
-    const roomId = req.params.roomId;
-    const m = await Meeting.findOne({ roomId }).sort({ startedAt: -1 }).lean();
+    const m = await Meeting.findOne({ roomId: req.params.roomId })
+      .sort({ startedAt: -1 })
+      .lean();
     if (!m) return res.status(404).json({ error: 'Meeting not found' });
-
-    const now = Date.now();
-    const stats = [...(m.participants || [])];
-    // people still in the meeting are not saved yet, so add their live numbers
-    const liveId = roomMeetings.get(roomId);
-    if (liveId && String(liveId) === String(m._id)) {
-      roomStats.get(roomId)?.forEach((st) => stats.push(snapshotStat(st, now)));
-    }
-
-    res.json({
-      roomId: m.roomId,
-      startedAt: m.startedAt,
-      endedAt: m.endedAt || null,
-      ...buildSummary(m.lines || [], m.startedAt, m.endedAt, stats, now),
-    });
+    res.json(reportFor(m));
   } catch (err) {
     console.error('Summary failed:', err.message);
     res.status(500).json({ error: 'Could not build summary' });
+  }
+});
+
+// The logged-in user's meetings, newest first
+app.get('/api/my-meetings', requireAuth, async (req, res) => {
+  try {
+    const list = await Meeting.find({ memberIds: req.userId })
+      .sort({ startedAt: -1 })
+      .limit(30)
+      .select('roomId startedAt endedAt hostId')
+      .lean();
+    res.json({
+      meetings: list.map((m) => ({
+        id: String(m._id),
+        roomId: m.roomId,
+        startedAt: m.startedAt,
+        endedAt: m.endedAt || null,
+        wasHost: String(m.hostId || '') === req.userId,
+      })),
+    });
+  } catch (err) {
+    console.error('Listing meetings failed:', err.message);
+    res.status(500).json({ error: 'Could not load meetings' });
+  }
+});
+
+// One of the logged-in user's meetings, with its full report
+app.get('/api/my-meetings/:id', requireAuth, async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ error: 'Meeting not found' });
+    }
+    const m = await Meeting.findOne({ _id: req.params.id, memberIds: req.userId }).lean();
+    if (!m) return res.status(404).json({ error: 'Meeting not found' });
+    res.json(reportFor(m));
+  } catch (err) {
+    console.error('Meeting report failed:', err.message);
+    res.status(500).json({ error: 'Could not load this meeting' });
   }
 });
 
