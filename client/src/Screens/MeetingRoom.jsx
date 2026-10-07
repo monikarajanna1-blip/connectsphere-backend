@@ -32,6 +32,14 @@ const ICE_SERVERS = {
 };
 
 // Turn the summary data from the server into a readable text file
+function fmtDur(ms) {
+  const s = Math.round((ms || 0) / 1000);
+  if (s < 60) return `${s} sec`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return r ? `${m} min ${r} sec` : `${m} min`;
+}
+
 function formatSummary(d) {
   const out = [];
   const start = new Date(d.startedAt);
@@ -71,6 +79,33 @@ function formatSummary(d) {
   } else {
     out.push('No tasks were mentioned.');
   }
+
+  // How engaged everyone was (does not use the camera)
+  const e = d.engagement;
+  out.push('');
+  out.push('HOW ENGAGED EVERYONE WAS');
+  if (e && e.people.length) {
+    out.push(`Overall: average score ${e.averageScore} out of 100.`);
+    if (e.mostActive) out.push(`Most active: ${e.mostActive}.`);
+    if (e.quiet.length) out.push(`Quiet (low engagement): ${e.quiet.join(', ')}.`);
+    out.push('');
+    e.people.forEach((p) => {
+      out.push(`${p.label}: ${p.level} engagement (${p.score}/100)`);
+      out.push(
+        `  Present for ${fmtDur(p.presenceMs)}, spoke or signed for about ${fmtDur(p.speakingMs)}, ` +
+          `microphone on ${p.micOnPercent}% of the time, ${p.contributions} contribution${p.contributions === 1 ? '' : 's'}.`
+      );
+    });
+    out.push('');
+    out.push(
+      'How the score works: out of 100 - 40 for how much the person spoke or signed, ' +
+        '30 for how many times they contributed, 20 for keeping the microphone on, ' +
+        '10 for staying in the meeting. The camera is not used.'
+    );
+  } else {
+    out.push('No engagement data was recorded.');
+  }
+
   out.push('');
   out.push('EVERYTHING THAT WAS SAID');
   if (d.transcript.length) {
@@ -402,6 +437,54 @@ function MeetingRoom() {
     return stop;
   }, [speechOn, micOn]);
 
+    // Measure how long I actually make sound (works with the camera off)
+  useEffect(() => {
+    let ctx = null;
+    let analyser = null;
+    let data = null;
+    let acc = 0;
+    let ticks = 0;
+
+    const timer = setInterval(() => {
+      if (!analyser && streamRef.current && streamRef.current.getAudioTracks().length) {
+        try {
+          const AC = window.AudioContext || window.webkitAudioContext;
+          ctx = new AC();
+          const src = ctx.createMediaStreamSource(streamRef.current);
+          analyser = ctx.createAnalyser();
+          analyser.fftSize = 1024;
+          src.connect(analyser);
+          data = new Uint8Array(analyser.fftSize);
+        } catch (e) {
+          return;
+        }
+      }
+      if (!analyser) return;
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+
+      analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128;
+        sum += v * v;
+      }
+      const rms = Math.sqrt(sum / data.length);
+      if (rms > 0.03) acc += 250; // louder than background noise = speaking
+
+      ticks++;
+      if (ticks % 20 === 0) {
+        // every 5 seconds, tell the server
+        if (acc > 0) socket.emit('engagement-tick', { speakingMs: acc });
+        acc = 0;
+      }
+    }, 250);
+
+    return () => {
+      clearInterval(timer);
+      if (ctx) ctx.close().catch(() => {});
+    };
+  }, []);
+
   // Start / stop sign recognition when the hand button is toggled
   useEffect(() => {
     if (!signOn) {
@@ -444,11 +527,12 @@ function MeetingRoom() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signOn]);
 
-  const toggleMic = () => {
+   const toggleMic = () => {
     if (streamRef.current) {
       streamRef.current.getAudioTracks().forEach((track) => {
         track.enabled = !track.enabled;
       });
+      socket.emit('mic-state', { on: !micOn });
       setMicOn(!micOn);
     }
   };

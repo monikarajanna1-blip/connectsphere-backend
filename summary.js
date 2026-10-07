@@ -63,20 +63,71 @@ function tidy(text) {
   return s;
 }
 
-function buildSummary(rawLines, startedAt, endedAt) {
+// Engagement score out of 100, using only things that work with the camera off:
+//   40 = how much the person spoke or signed
+//   30 = how many times they contributed
+//   20 = how long their microphone was on
+//   10 = how much of the meeting they stayed for
+function buildEngagement(stats, labelOf, endMs, meetingMs) {
+  const people = stats.map((s) => {
+    const presence = Math.max(1000, (s.leftAt || endMs) - s.joinedAt);
+    const minutes = presence / 60000;
+    const talkRatio = (s.speakingMs || 0) / presence;
+    const micRatio = Math.min(1, (s.micOnMs || 0) / presence);
+    const contributions = (s.speechLines || 0) + (s.signLines || 0);
+
+    const talkPts = Math.min(1, talkRatio / 0.15) * 40;
+    const contribPts = Math.min(1, contributions / Math.max(2, minutes)) * 30;
+    const micPts = micRatio * 20;
+    const stayPts = Math.min(1, presence / Math.max(1000, meetingMs)) * 10;
+    const score = Math.round(talkPts + contribPts + micPts + stayPts);
+
+    return {
+      label: labelOf(s.sid, s.role),
+      role: s.role,
+      presenceMs: presence,
+      speakingMs: s.speakingMs || 0,
+      micOnPercent: Math.round(micRatio * 100),
+      micToggles: s.micToggles || 0,
+      contributions,
+      score,
+      level: score >= 70 ? 'High' : score >= 40 ? 'Moderate' : 'Low',
+    };
+  });
+
+  people.sort((a, b) => (a.role === 'Host' ? -1 : b.role === 'Host' ? 1 : a.label.localeCompare(b.label)));
+
+  const avg = people.length
+    ? Math.round(people.reduce((sum, p) => sum + p.score, 0) / people.length)
+    : 0;
+  const top = [...people].sort((a, b) => b.score - a.score)[0];
+  return {
+    people,
+    averageScore: avg,
+    mostActive: top ? top.label : null,
+    quiet: people.filter((p) => p.level === 'Low').map((p) => p.label),
+  };
+}
+
+function buildSummary(rawLines, startedAt, endedAt, stats = [], nowMs = Date.now()) {
   const lines = cleanLines(rawLines);
 
-  // Give each participant a number so people can tell them apart
-  const partIds = [];
+  // Number the participants in the order they joined
+  const partIds = [...stats]
+    .filter((s) => s.role !== 'Host')
+    .sort((a, b) => a.joinedAt - b.joinedAt)
+    .map((s) => s.sid);
   lines.forEach((l) => {
     if (l.role !== 'Host' && !partIds.includes(l.from)) partIds.push(l.from);
   });
-  const shortOf = (l) =>
-    l.role === 'Host'
+
+  const labelOf = (sid, role) =>
+    role === 'Host'
       ? 'Host'
       : partIds.length <= 1
       ? 'Participant'
-      : `Participant ${partIds.indexOf(l.from) + 1}`;
+      : `Participant ${partIds.indexOf(sid) + 1}`;
+  const shortOf = (l) => labelOf(l.from, l.role);
   const longOf = (l) =>
     l.role === 'Host'
       ? 'The host'
@@ -146,10 +197,16 @@ function buildSummary(rawLines, startedAt, endedAt) {
     })
     .map((s) => ({ who: s.short, text: s.text }));
 
-  // How long the meeting ran
+  // When the meeting started and ended
   const times = lines.map((l) => l.time).filter(Boolean);
   const start = startedAt ? new Date(startedAt).getTime() : times[0] || 0;
-  const end = endedAt ? new Date(endedAt).getTime() : times[times.length - 1] || start;
+  const stillIn = stats.some((s) => !s.leftAt);
+  const endMs = endedAt
+    ? new Date(endedAt).getTime()
+    : stillIn
+    ? nowMs
+    : Math.max(start, ...times, ...stats.map((s) => s.leftAt || 0));
+  const meetingMs = Math.max(0, endMs - start);
 
   return {
     topics,
@@ -159,7 +216,8 @@ function buildSummary(rawLines, startedAt, endedAt) {
       hostSpoke: lines.some((l) => l.role === 'Host'),
       participants: partIds.length,
     },
-    durationMs: Math.max(0, end - start),
+    durationMs: meetingMs,
+    engagement: buildEngagement(stats, labelOf, endMs, meetingMs),
     transcript: lines.map((l) => ({
       who: shortOf(l),
       kind: l.kind,
