@@ -1,4 +1,7 @@
-// Live speech-to-text using the browser's built-in recognition (Chrome / Edge)
+// Live speech-to-text using the browser's built-in recognition (Chrome / Edge / Android Chrome)
+const norm = (s) =>
+  s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+
 export function startSpeechRecognition({ onFinal, onError, lang = 'en-IN' }) {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) {
@@ -9,28 +12,43 @@ export function startSpeechRecognition({ onFinal, onError, lang = 'en-IN' }) {
   let active = true;
   let failures = 0;
   let restartTimer = null;
-  let flushTimer = null;
+  let sendTimer = null;
   let rec = null;
-  let pending = ''; // what the browser has heard but not yet finalised
+  let buffer = ''; // the sentence being heard right now
+  let lastSent = '';
 
-  const send = (text) => {
-    const clean = text.trim();
-    if (!clean) return;
-    console.log('Heard:', clean);
-    onFinal(clean);
+  // Send the buffered sentence once
+  const sendBuffer = () => {
+    clearTimeout(sendTimer);
+    const text = buffer.trim();
+    buffer = '';
+    if (!text) return;
+    const n = norm(text);
+    if (!n || n === lastSent) return;
+    lastSent = n;
+    console.log('Heard:', text);
+    onFinal(text);
   };
 
-  // Send whatever is pending, then restart so the next sentence starts clean
-  const flush = () => {
-    if (pending) {
-      send(pending);
-      pending = '';
-      try {
-        rec?.stop(); // onend will restart listening
-      } catch (e) {
-        /* ignore */
+  // Merge new text into the buffer: a longer version replaces a shorter one
+  const addText = (t) => {
+    const text = t.trim();
+    if (!text) return;
+    if (buffer) {
+      const nb = norm(buffer);
+      const nt = norm(text);
+      if (nt.startsWith(nb)) buffer = text; // same sentence, now longer
+      else if (nb.startsWith(nt)) {
+        /* older, shorter version: ignore */
+      } else {
+        sendBuffer(); // a different sentence started
+        buffer = text;
       }
+    } else {
+      buffer = text;
     }
+    clearTimeout(sendTimer);
+    sendTimer = setTimeout(sendBuffer, 1200); // quiet for 1.2 s = sentence done
   };
 
   const begin = () => {
@@ -42,21 +60,8 @@ export function startSpeechRecognition({ onFinal, onError, lang = 'en-IN' }) {
 
     rec.onresult = (e) => {
       failures = 0;
-      clearTimeout(flushTimer);
-      let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        const r = e.results[i];
-        if (r.isFinal) {
-          pending = '';
-          send(r[0].transcript);
-        } else {
-          interim += r[0].transcript;
-        }
-      }
-      if (interim) {
-        pending = interim;
-        // if the browser does not finalise soon, send it ourselves
-        flushTimer = setTimeout(flush, 1500);
+        addText(e.results[i][0].transcript);
       }
     };
 
@@ -75,11 +80,7 @@ export function startSpeechRecognition({ onFinal, onError, lang = 'en-IN' }) {
     };
 
     rec.onend = () => {
-      clearTimeout(flushTimer);
-      if (pending) {
-        send(pending);
-        pending = '';
-      }
+      sendBuffer();
       if (!active) return;
       const delay = failures ? Math.min(5000, 400 + failures * 800) : 100;
       restartTimer = setTimeout(begin, delay);
@@ -97,7 +98,7 @@ export function startSpeechRecognition({ onFinal, onError, lang = 'en-IN' }) {
   return () => {
     active = false;
     clearTimeout(restartTimer);
-    clearTimeout(flushTimer);
+    sendBuffer(); // send the last sentence before stopping
     try {
       rec?.stop();
     } catch (err) {

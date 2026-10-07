@@ -3,7 +3,8 @@ const STOP = new Set(
     'i you he she it we they me my your our their this that these those there here what which who whom ' +
     'do does did done have has had will would can could should must may might shall not no yes ok okay ' +
     'just very really also than too up down out over again more most some any all each other such ' +
-    'am im ill ive well like get got going gonna one two hello hi thanks thank please')
+    'am im ill ive well like get got going gonna one two hello hi thanks thank please ' +
+    "we'll i'll you'll that's it's what's here's let's don't can't guys tell show going")
     .split(' ')
 );
 
@@ -13,7 +14,39 @@ const ACTION_RE =
 const words = (s) =>
   s.toLowerCase().replace(/[^a-z\s']/g, ' ').split(/\s+/).filter(Boolean);
 
-function buildSummary(lines) {
+const normText = (s) =>
+  String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+
+// Remove duplicate and "growing" lines from the same speaker within a few seconds
+function cleanLines(lines) {
+  const out = [];
+  for (const l of lines) {
+    const n = normText(l.text);
+    if (!n) continue;
+    let handled = false;
+    for (let i = out.length - 1; i >= 0 && i >= out.length - 6; i--) {
+      const p = out[i];
+      if (p.from !== l.from || p.kind !== l.kind) continue;
+      if (Math.abs((l.time || 0) - (p.time || 0)) > 8000) continue;
+      const pn = normText(p.text);
+      if (n === pn || pn.startsWith(n)) {
+        handled = true; // same sentence, or a shorter copy of it: skip
+        break;
+      }
+      if (n.startsWith(pn)) {
+        out[i] = l; // longer version of the earlier line: replace it
+        handled = true;
+        break;
+      }
+    }
+    if (!handled) out.push(l);
+  }
+  return out;
+}
+
+function buildSummary(rawLines) {
+  const lines = cleanLines(rawLines);
+
   // 1. Split every line into sentences, remembering who said it
   const sentences = [];
   lines.forEach((l) => {
