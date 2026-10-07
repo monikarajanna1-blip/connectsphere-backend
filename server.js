@@ -309,20 +309,6 @@ const reportFor = (m) => {
   };
 };
 
-// Used by the "download summary" popup at the end of a meeting
-app.get('/api/meetings/:roomId/summary', async (req, res) => {
-  try {
-    const m = await Meeting.findOne({ roomId: req.params.roomId })
-      .sort({ startedAt: -1 })
-      .lean();
-    if (!m) return res.status(404).json({ error: 'Meeting not found' });
-    res.json(reportFor(m));
-  } catch (err) {
-    console.error('Summary failed:', err.message);
-    res.status(500).json({ error: 'Could not build summary' });
-  }
-});
-
 // The logged-in user's meetings, newest first
 app.get('/api/my-meetings', requireAuth, async (req, res) => {
   try {

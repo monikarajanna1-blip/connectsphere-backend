@@ -1,4 +1,4 @@
-// Shared by the dashboard and the insights page
+// Shared by the dashboard (Recent Meetings) and the Insights page
 
 export function fmtDur(ms) {
   const s = Math.round((ms || 0) / 1000);
@@ -17,74 +17,69 @@ export function downloadText(filename, text) {
   URL.revokeObjectURL(a.href);
 }
 
-// Turn the report from the server into a readable text file
-export function formatSummary(d) {
-  const out = [];
+// Plain words instead of High / Moderate / Low
+export const levelWord = (level) =>
+  level === 'High' ? 'Very active' : level === 'Moderate' ? 'Active' : 'Quiet';
+
+export function peopleLine(d) {
+  const people = [];
+  if (d.people.hostSpoke) people.push('1 host');
+  if (d.people.participants > 0) {
+    people.push(`${d.people.participants} participant${d.people.participants === 1 ? '' : 's'}`);
+  }
+  return people.length ? people.join(', ') : 'nobody spoke or signed';
+}
+
+export function dateLine(d) {
   const start = new Date(d.startedAt);
-  const mins = Math.round((d.durationMs || 0) / 60000);
-  const duration = mins < 1 ? 'less than a minute' : `${mins} minute${mins === 1 ? '' : 's'}`;
   const date = start.toLocaleDateString(undefined, {
     day: 'numeric',
     month: 'long',
     year: 'numeric',
   });
   const time = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return `${date}, ${time}`;
+}
 
-  const people = [];
-  if (d.people.hostSpoke) people.push('1 host');
-  if (d.people.participants > 0) {
-    people.push(`${d.people.participants} participant${d.people.participants === 1 ? '' : 's'}`);
-  }
+export function lengthLine(d) {
+  const mins = Math.round((d.durationMs || 0) / 60000);
+  return mins < 1 ? 'less than a minute' : `${mins} minute${mins === 1 ? '' : 's'}`;
+}
 
+// The downloadable text file. Same order as the Insights page.
+export function formatSummary(d) {
+  const out = [];
   out.push('MEETING SUMMARY');
-  out.push(`Date: ${date}, ${time}`);
-  out.push(`Length: ${duration}`);
-  out.push(`People who spoke or signed: ${people.length ? people.join(', ') : 'nobody'}`);
+  out.push(`Date: ${dateLine(d)}`);
+  out.push(`Length: ${lengthLine(d)}`);
+  out.push(`Who took part: ${peopleLine(d)}`);
   out.push('');
-  out.push('MAIN TOPICS');
-  out.push(d.topics.length ? d.topics.join(', ') : 'Not enough was said to pick topics.');
-  out.push('');
-  out.push('WHAT WAS DISCUSSED');
+
+  out.push('KEY POINTS');
   if (d.discussed.length) {
     d.discussed.forEach((s) => out.push(`- ${s.who} ${s.verb}: "${s.text}"`));
   } else {
     out.push('Nothing was recorded.');
   }
-  out.push('');
-  out.push('THINGS TO DO');
+
+  // only shown when something was found
   if (d.actionItems.length) {
+    out.push('');
+    out.push('THINGS TO DO');
     d.actionItems.forEach((a) => out.push(`- ${a.who}: ${a.text}`));
-  } else {
-    out.push('No tasks were mentioned.');
   }
 
   const e = d.engagement;
-  out.push('');
-  out.push('HOW ENGAGED EVERYONE WAS');
   if (e && e.people.length) {
-    out.push(`Overall: average score ${e.averageScore} out of 100.`);
-    if (e.mostActive) out.push(`Most active: ${e.mostActive}.`);
-    if (e.quiet.length) out.push(`Quiet (low engagement): ${e.quiet.join(', ')}.`);
     out.push('');
-    e.people.forEach((p) => {
-      out.push(`${p.label}: ${p.level} engagement (${p.score}/100)`);
-      out.push(
-        `  Present for ${fmtDur(p.presenceMs)}, spoke or signed for about ${fmtDur(p.speakingMs)}, ` +
-          `microphone on ${p.micOnPercent}% of the time, ${p.contributions} contribution${p.contributions === 1 ? '' : 's'}.`
-      );
-    });
-    out.push('');
-    out.push(
-      'How the score works: out of 100 - 50 for how much the person spoke or signed, ' +
-        '35 for how many times they contributed, 10 for keeping the microphone on, ' +
-        '5 for staying in the meeting. The camera is not used.'
+    out.push('HOW EVERYONE TOOK PART');
+    e.people.forEach((p) =>
+      out.push(`${p.label}: ${levelWord(p.level)} (spoke or signed for about ${fmtDur(p.speakingMs)})`)
     );
-  } else {
-    out.push('No engagement data was recorded.');
   }
 
   out.push('');
-  out.push('EVERYTHING THAT WAS SAID');
+  out.push('FULL TRANSCRIPT');
   if (d.transcript.length) {
     d.transcript.forEach((t) => {
       const when = t.time
