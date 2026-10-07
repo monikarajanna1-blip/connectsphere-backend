@@ -4,14 +4,16 @@ const STOP = new Set(
     'do does did done have has had will would can could should must may might shall not no yes ok okay ' +
     'just very really also than too up down out over again more most some any all each other such ' +
     'am im ill ive well like get got going gonna one two hello hi thanks thank please ' +
-        "we'll i'll you'll that's it's what's here's let's don't can't guys tell show going yeah note")
+    "we'll i'll you'll that's it's what's here's let's don't can't guys tell show going yeah note")
     .split(' ')
 );
 
 const ACTION_RE =
   /\b(i will|i'll|we will|we'll|need to|needs to|have to|has to|must|should|remind|assign|deadline|follow up|send|finish|complete|submit|prepare|schedule|by (monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|tonight|next week|end of))\b/i;
 
-const QUESTION_START = /^(what|why|how|when|where|who|can|could|will|would|do|does|did|is|are|should|have|has|had)\b/i;
+const QUESTION_START =
+  /^(what|why|how|when|where|who|can|could|will|would|do|does|did|is|are|should|have|has|had)\b/i;
+
 const words = (s) =>
   s.toLowerCase().replace(/[^a-z\s']/g, ' ').split(/\s+/).filter(Boolean);
 
@@ -63,10 +65,11 @@ function tidy(text) {
 }
 
 // Engagement score out of 100, using only things that work with the camera off:
-//   40 = how much the person spoke or signed
-//   30 = how many times they contributed
-//   20 = how long their microphone was on
-//   10 = how much of the meeting they stayed for
+//   50 = how much the person spoke or signed
+//   35 = how many times they contributed
+//   10 = how long their microphone was on
+//    5 = how much of the meeting they stayed for
+// Someone who never contributed cannot score above Low.
 function buildEngagement(stats, labelOf, endMs, meetingMs) {
   const people = stats.map((s) => {
     const presence = Math.max(1000, (s.leftAt || endMs) - s.joinedAt);
@@ -79,7 +82,8 @@ function buildEngagement(stats, labelOf, endMs, meetingMs) {
     const contribPts = Math.min(1, contributions / Math.max(2, minutes)) * 35;
     const micPts = micRatio * 10;
     const stayPts = Math.min(1, presence / Math.max(1000, meetingMs)) * 5;
-    const score = Math.round(talkPts + contribPts + micPts + stayPts);
+    let score = Math.round(talkPts + contribPts + micPts + stayPts);
+    if (contributions === 0) score = Math.min(score, 35);
 
     return {
       label: labelOf(s.sid, s.role),
@@ -94,7 +98,9 @@ function buildEngagement(stats, labelOf, endMs, meetingMs) {
     };
   });
 
-  people.sort((a, b) => (a.role === 'Host' ? -1 : b.role === 'Host' ? 1 : a.label.localeCompare(b.label)));
+  people.sort((a, b) =>
+    a.role === 'Host' ? -1 : b.role === 'Host' ? 1 : a.label.localeCompare(b.label)
+  );
 
   const avg = people.length
     ? Math.round(people.reduce((sum, p) => sum + p.score, 0) / people.length)
@@ -110,6 +116,15 @@ function buildEngagement(stats, labelOf, endMs, meetingMs) {
 
 function buildSummary(rawLines, startedAt, endedAt, stats = [], nowMs = Date.now()) {
   const lines = cleanLines(rawLines);
+
+  // Ignore brief ghost connections (a reconnect or a stray tab):
+  // under 10 seconds and nothing said or signed
+  stats = stats.filter((s) => {
+    const present = (s.leftAt || nowMs) - s.joinedAt;
+    const active =
+      (s.speechLines || 0) + (s.signLines || 0) > 0 || (s.speakingMs || 0) >= 2000;
+    return present >= 10000 || active;
+  });
 
   // Number the participants in the order they joined
   const partIds = [...stats]
