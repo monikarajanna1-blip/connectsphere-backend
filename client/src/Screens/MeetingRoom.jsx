@@ -51,6 +51,7 @@ function MeetingRoom() {
   const [needsUnmute, setNeedsUnmute] = useState(false);
   const [hostEndedPopup, setHostEndedPopup] = useState(false);
   const [roomNotFound, setRoomNotFound] = useState(false);
+  const [waiting, setWaiting] = useState(null); // { title } while waiting for the host to start
   const [showStartPopup, setShowStartPopup] = useState(isHost);
   const [hostLeftBanner, setHostLeftBanner] = useState(false);
   const [hostId, setHostId] = useState(null);
@@ -176,10 +177,22 @@ function MeetingRoom() {
       if (streamRef.current) joinRoom();
     };
 
+    // The code is wrong, or the host has not started and nothing was scheduled
     const onRoomNotFound = () => {
       stopMedia();
       setRoomNotFound(true);
       socket.disconnect();
+    };
+
+    // A scheduled meeting that the host has not started yet: wait in the lobby
+    const onWaiting = (info) => {
+      setWaiting({ title: info?.title || 'this meeting' });
+    };
+
+    // The host started: join automatically
+    const onHostStarted = () => {
+      setWaiting(null);
+      joinRoom();
     };
 
     const onUserJoined = (remoteId) => {
@@ -255,6 +268,8 @@ function MeetingRoom() {
 
     socket.on('connect', onConnect);
     socket.on('room-not-found', onRoomNotFound);
+    socket.on('waiting-for-host', onWaiting);
+    socket.on('host-started', onHostStarted);
     socket.on('user-joined', onUserJoined);
     socket.on('offer', onOffer);
     socket.on('answer', onAnswer);
@@ -303,6 +318,8 @@ function MeetingRoom() {
       cancelled = true;
       socket.off('connect', onConnect);
       socket.off('room-not-found', onRoomNotFound);
+      socket.off('waiting-for-host', onWaiting);
+      socket.off('host-started', onHostStarted);
       socket.off('user-joined', onUserJoined);
       socket.off('offer', onOffer);
       socket.off('answer', onAnswer);
@@ -336,9 +353,9 @@ function MeetingRoom() {
   }, []);
 
   // Silently listen to my voice and send each sentence to the server.
-  // It only listens while my mic is on, so muting also pauses it.
+  // It only listens while my mic is on and I am actually in the meeting.
   useEffect(() => {
-    if (!speechOn || !micOn) return;
+    if (!speechOn || !micOn || waiting) return;
     const stop = startSpeechRecognition({
       onFinal: (text) => socket.emit('transcript-line', { text, kind: 'speech' }),
       onError: (msg) => {
@@ -347,7 +364,7 @@ function MeetingRoom() {
       },
     });
     return stop;
-  }, [speechOn, micOn]);
+  }, [speechOn, micOn, waiting]);
 
   // Measure how long I actually make sound (works with the camera off)
   useEffect(() => {
@@ -467,6 +484,7 @@ function MeetingRoom() {
     setSignOn(false);
     setHostEndedPopup(false);
     setShowStartPopup(false);
+    setWaiting(null);
     stopMedia();
     setTimeout(() => {
       try {
@@ -518,11 +536,18 @@ function MeetingRoom() {
               <div className="v3-logo" style={{ fontSize: 32 }}>
                 Connect<span>Sphere</span>
               </div>
-              <p className="ended-title">Meeting not found</p>
+              <p className="ended-title">The host hasn't started yet</p>
               <p className="code-modal-text">
-                No host has started a meeting with this code. Check the code
-                and try again.
+                The host hasn't started this meeting. Please wait or try again in
+                a minute. If it still doesn't open, check that the code is right.
               </p>
+              <button
+                className="v3-btn"
+                style={{ width: '100%', marginBottom: 10 }}
+                onClick={() => window.location.reload()}
+              >
+                Try again
+              </button>
               <button
                 className="v3-btn"
                 style={{ width: '100%' }}
@@ -662,6 +687,30 @@ function MeetingRoom() {
               </div>
               <button className="v3-btn" onClick={() => setShowStartPopup(false)}>
                 OK, Got It
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {waiting && (
+        <div className="modal-overlay">
+          <div className="v3-ring code-modal-ring">
+            <div className="v3-card ended-card">
+              <div className="v3-logo" style={{ fontSize: 32 }}>
+                Connect<span>Sphere</span>
+              </div>
+              <p className="ended-title">Waiting for the host</p>
+              <p className="code-modal-text">
+                "{waiting.title}" hasn't started yet. You'll join automatically
+                as soon as the host starts it. You can leave this page open.
+              </p>
+              <button
+                className="v3-btn"
+                style={{ width: '100%' }}
+                onClick={finishLeave}
+              >
+                Leave
               </button>
             </div>
           </div>

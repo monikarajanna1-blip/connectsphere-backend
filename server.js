@@ -8,8 +8,8 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const authRoutes = require('./routes/auth');
 const Meeting = require('./models/Meeting');
-const { buildSummary } = require('./summary');
 const Schedule = require('./models/Schedule');
+const { buildSummary } = require('./summary');
 
 const app = express();
 const server = http.createServer(app);
@@ -47,6 +47,8 @@ const requireAuth = (req, res, next) => {
 const roomHosts = new Map(); // roomId -> socket.id of the host
 const roomMeetings = new Map(); // roomId -> Meeting _id in MongoDB
 const roomStats = new Map(); // roomId -> Map(socketId -> engagement stats)
+
+const waitRoom = (roomId) => `wait:${roomId}`; // guests waiting for the host
 
 const emitRoomCount = (roomId) => {
   const size = io.sockets.adapter.rooms.get(roomId)?.size || 0;
@@ -132,13 +134,29 @@ io.on('connection', (socket) => {
             .then((m) => roomMeetings.set(roomId, m._id))
             .catch((err) => console.error('Creating meeting failed:', err.message));
         }
+        // anyone waiting in the lobby can come in now
+        io.to(waitRoom(roomId)).emit('host-started');
       }
     } else if (!roomHosts.has(roomId) && !roomMeetings.has(roomId)) {
-      console.log(`${socket.id} tried to join nonexistent room ${roomId}`);
-      socket.emit('room-not-found');
+      // The host has not started yet. If the meeting was scheduled, the guest
+      // waits and is let in automatically; otherwise they get a friendly message.
+      Schedule.findOne({ roomId })
+        .select('title startsAt')
+        .lean()
+        .then((s) => {
+          if (s) {
+            socket.join(waitRoom(roomId));
+            socket.emit('waiting-for-host', { title: s.title, startsAt: s.startsAt });
+          } else {
+            console.log(`${socket.id} tried to join a room not started yet: ${roomId}`);
+            socket.emit('room-not-found');
+          }
+        })
+        .catch(() => socket.emit('room-not-found'));
       return;
     }
 
+    socket.leave(waitRoom(roomId));
     socket.data.roomId = roomId;
     socket.join(roomId);
 
@@ -205,7 +223,7 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     const roomId = socket.data.roomId;
-    if (!roomId) return;
+    if (!roomId) return; // was only waiting in the lobby
 
     const wasHost = roomHosts.get(roomId) === socket.id;
 
@@ -348,7 +366,6 @@ app.get('/api/my-meetings/:id', requireAuth, async (req, res) => {
   }
 });
 
-
 // ===== SCHEDULED MEETINGS =====
 // Upcoming meetings (and ones that started in the last 2 hours)
 app.get('/api/schedules', requireAuth, async (req, res) => {
@@ -416,7 +433,6 @@ app.delete('/api/schedules/:id', requireAuth, async (req, res) => {
     res.status(500).json({ error: 'Could not delete' });
   }
 });
-
 
 // ===== SERVE THE BUILT REACT APP =====
 app.use(express.static(path.join(__dirname, 'client/dist')));

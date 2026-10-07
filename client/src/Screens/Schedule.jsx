@@ -88,9 +88,11 @@ function Schedule() {
     setTimeout(() => setCopiedId(''), 2000);
   };
 
-  const handleStart = (s) =>
+  const handleStart = (s) => {
+    // the dashboard countdown should not appear again for this meeting
+    sessionStorage.setItem(`as-${s.id}`, '1');
     navigate(`/meeting/${s.roomId}`, { state: { isHost: true } });
-
+  };
   const card = { padding: 18, marginBottom: 14, cursor: 'default' };
   const field = {
     width: '100%',

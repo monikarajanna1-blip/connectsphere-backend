@@ -20,7 +20,8 @@ function Home() {
   const [joinCode, setJoinCode] = useState('');
   const [recent, setRecent] = useState([]);
   const [recentLoading, setRecentLoading] = useState(true);
-  const [upcoming, setUpcoming] = useState([]);
+  const [schedules, setSchedules] = useState([]);
+  const [auto, setAuto] = useState(null); // { id, title, roomId, seconds } while the countdown runs
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -32,7 +33,7 @@ function Home() {
     setUser(JSON.parse(storedUser));
   }, [navigate]);
 
-  // Load the user's latest meetings and upcoming scheduled ones
+  // Load the user's latest meetings and scheduled ones
   useEffect(() => {
     if (!user) return;
     meetingsApi
@@ -42,9 +43,43 @@ function Home() {
       .finally(() => setRecentLoading(false));
     meetingsApi
       .get('/schedules')
-      .then((res) => setUpcoming(res.data.schedules.slice(0, 3)))
+      .then((res) => setSchedules(res.data.schedules))
       .catch(() => {});
   }, [user]);
+
+  // When a scheduled time arrives (and it was started less than 10 minutes ago),
+  // show the countdown once for that meeting
+  useEffect(() => {
+    if (!user || auto) return;
+    const check = () => {
+      const now = Date.now();
+      const due = schedules.find((s) => {
+        const t = new Date(s.startsAt).getTime();
+        return t <= now && now - t < 10 * 60 * 1000 && !sessionStorage.getItem(`as-${s.id}`);
+      });
+      if (due) {
+        sessionStorage.setItem(`as-${due.id}`, '1');
+        setAuto({ id: due.id, title: due.title, roomId: due.roomId, seconds: 10 });
+      }
+    };
+    check();
+    const timer = setInterval(check, 1000);
+    return () => clearInterval(timer);
+  }, [user, schedules, auto]);
+
+  // Count down, then open the meeting as host
+  useEffect(() => {
+    if (!auto) return;
+    if (auto.seconds <= 0) {
+      navigate(`/meeting/${auto.roomId}`, { state: { isHost: true } });
+      return;
+    }
+    const t = setTimeout(
+      () => setAuto((a) => (a ? { ...a, seconds: a.seconds - 1 } : a)),
+      1000
+    );
+    return () => clearTimeout(t);
+  }, [auto, navigate]);
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -55,6 +90,12 @@ function Home() {
   const handleStartMeeting = () => {
     const roomId = Math.random().toString(36).substring(2, 9);
     navigate(`/meeting/${roomId}`, { state: { isHost: true } });
+  };
+
+  const startScheduled = (s) => {
+    // the countdown should not appear again for a meeting that was started by hand
+    sessionStorage.setItem(`as-${s.id}`, '1');
+    navigate(`/meeting/${s.roomId}`, { state: { isHost: true } });
   };
 
   const handleJoinMeeting = (e) => {
@@ -80,6 +121,7 @@ function Home() {
   if (!user) return null;
 
   const initial = user.name.charAt(0).toUpperCase();
+  const upcoming = schedules.slice(0, 3);
 
   return (
     <div className="dash-container">
@@ -200,7 +242,7 @@ function Home() {
                   style={{ display: 'flex', gap: 6, alignItems: 'center' }}
                   onClick={(e) => {
                     e.stopPropagation();
-                    navigate(`/meeting/${s.roomId}`, { state: { isHost: true } });
+                    startScheduled(s);
                   }}
                 >
                   <Play size={14} /> Start
@@ -260,6 +302,39 @@ function Home() {
           </div>
         ))}
       </div>
+
+      {auto && (
+        <div className="modal-overlay">
+          <div className="v3-ring code-modal-ring">
+            <div className="v3-card ended-card">
+              <div className="v3-logo" style={{ fontSize: 32 }}>
+                Connect<span>Sphere</span>
+              </div>
+              <p className="ended-title">Your meeting is starting</p>
+              <p className="code-modal-text">
+                "{auto.title}" starts in {auto.seconds} second
+                {auto.seconds === 1 ? '' : 's'}. Your camera and microphone will turn on.
+              </p>
+              <button
+                className="v3-btn"
+                style={{ width: '100%', marginBottom: 10 }}
+                onClick={() =>
+                  navigate(`/meeting/${auto.roomId}`, { state: { isHost: true } })
+                }
+              >
+                Start now
+              </button>
+              <button
+                className="v3-btn"
+                style={{ width: '100%' }}
+                onClick={() => setAuto(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
