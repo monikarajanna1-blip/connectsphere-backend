@@ -98,9 +98,9 @@ function formatSummary(d) {
     });
     out.push('');
     out.push(
-      'How the score works: out of 100 - 40 for how much the person spoke or signed, ' +
-        '30 for how many times they contributed, 20 for keeping the microphone on, ' +
-        '10 for staying in the meeting. The camera is not used.'
+      'How the score works: out of 100 - 50 for how much the person spoke or signed, ' +
+        '35 for how many times they contributed, 10 for keeping the microphone on, ' +
+        '5 for staying in the meeting. The camera is not used.'
     );
   } else {
     out.push('No engagement data was recorded.');

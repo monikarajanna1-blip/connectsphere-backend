@@ -41,7 +41,7 @@ const snapshotStat = (st, now) => ({
   role: st.role,
   joinedAt: st.joinedAt,
   leftAt: st.leftAt || null,
-  speakingMs: st.speakingMs,
+  speakingMs: Math.max(st.speakingMs, st.estMs || 0),
   micOnMs: st.micOnMs + (st.micOn && !st.leftAt ? now - st.micSince : 0),
   micToggles: st.micToggles,
   speechLines: st.speechLines,
@@ -67,6 +67,7 @@ const addTranscript = (roomId, socketId, kind, text) => {
     else {
       st.speechLines++;
       st.words += clean.split(/\s+/).length;
+      st.estMs = (st.estMs || 0) + clean.split(/\s+/).length * 400;
     }
   }
   const meetingId = roomMeetings.get(roomId);
@@ -119,6 +120,7 @@ io.on('connection', (socket) => {
         speechLines: 0,
         signLines: 0,
         words: 0,
+        estMs: 0,
       });
     }
 

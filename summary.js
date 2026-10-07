@@ -9,7 +9,7 @@ const STOP = new Set(
 );
 
 const ACTION_RE =
-  /\b(i will|i'll|we will|we'll|need to|needs to|have to|has to|must|should|let's|remind|assign|deadline|follow up|send|finish|complete|submit|prepare|schedule|by (monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|tonight|next week|end of))\b/i;
+  /\b(i will|i'll|we will|we'll|need to|needs to|have to|has to|must|should|remind|assign|deadline|follow up|send|finish|complete|submit|prepare|schedule|by (monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|tonight|next week|end of))\b/i;
 
 const QUESTION_START = /^(what|why|how|when|where|who|can|could|will|would|do|does|did|is|are|should)\b/i;
 
@@ -76,10 +76,10 @@ function buildEngagement(stats, labelOf, endMs, meetingMs) {
     const micRatio = Math.min(1, (s.micOnMs || 0) / presence);
     const contributions = (s.speechLines || 0) + (s.signLines || 0);
 
-    const talkPts = Math.min(1, talkRatio / 0.15) * 40;
-    const contribPts = Math.min(1, contributions / Math.max(2, minutes)) * 30;
-    const micPts = micRatio * 20;
-    const stayPts = Math.min(1, presence / Math.max(1000, meetingMs)) * 10;
+    const talkPts = Math.min(1, talkRatio / 0.15) * 50;
+    const contribPts = Math.min(1, contributions / Math.max(2, minutes)) * 35;
+    const micPts = micRatio * 10;
+    const stayPts = Math.min(1, presence / Math.max(1000, meetingMs)) * 5;
     const score = Math.round(talkPts + contribPts + micPts + stayPts);
 
     return {
