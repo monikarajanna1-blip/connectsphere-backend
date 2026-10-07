@@ -9,6 +9,7 @@ import {
   LogOut,
   Sparkles,
   Download,
+  Play,
 } from 'lucide-react';
 import { meetingsApi } from '../api';
 import { formatSummary, downloadText, fmtDur } from '../formatSummary';
@@ -19,6 +20,7 @@ function Home() {
   const [joinCode, setJoinCode] = useState('');
   const [recent, setRecent] = useState([]);
   const [recentLoading, setRecentLoading] = useState(true);
+  const [upcoming, setUpcoming] = useState([]);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -30,7 +32,7 @@ function Home() {
     setUser(JSON.parse(storedUser));
   }, [navigate]);
 
-  // Load the user's latest meetings
+  // Load the user's latest meetings and upcoming scheduled ones
   useEffect(() => {
     if (!user) return;
     meetingsApi
@@ -38,6 +40,10 @@ function Home() {
       .then((res) => setRecent(res.data.meetings.slice(0, 5)))
       .catch(() => {})
       .finally(() => setRecentLoading(false));
+    meetingsApi
+      .get('/schedules')
+      .then((res) => setUpcoming(res.data.schedules.slice(0, 3)))
+      .catch(() => {});
   }, [user]);
 
   const handleLogout = () => {
@@ -67,7 +73,7 @@ function Home() {
     }
   };
 
-  const handleSchedule = () => alert('Schedule Meeting — coming soon');
+  const handleSchedule = () => navigate('/schedule');
   const handleInsights = () => navigate('/insights');
   const handleAccessibility = () => alert('Accessibility Settings — coming soon');
 
@@ -158,6 +164,51 @@ function Home() {
             </div>
           </div>
         </div>
+
+        {upcoming.length > 0 && (
+          <>
+            <div className="section-title">Upcoming Meetings</div>
+            {upcoming.map((s) => (
+              <div
+                key={s.id}
+                className="glass-card"
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: 10,
+                  padding: '14px 18px',
+                  cursor: 'pointer',
+                }}
+                onClick={() => navigate('/schedule')}
+              >
+                <div>
+                  <strong>{s.title}</strong>
+                  <div style={{ opacity: 0.7, fontSize: 13, marginTop: 3 }}>
+                    {new Date(s.startsAt).toLocaleString([], {
+                      weekday: 'short',
+                      day: 'numeric',
+                      month: 'short',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}{' '}
+                    · Code {s.roomId}
+                  </div>
+                </div>
+                <button
+                  className="join-go"
+                  style={{ display: 'flex', gap: 6, alignItems: 'center' }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    navigate(`/meeting/${s.roomId}`, { state: { isHost: true } });
+                  }}
+                >
+                  <Play size={14} /> Start
+                </button>
+              </div>
+            ))}
+          </>
+        )}
 
         <div className="section-title">Recent Meetings</div>
         {recentLoading && <div className="empty-state">Loading...</div>}

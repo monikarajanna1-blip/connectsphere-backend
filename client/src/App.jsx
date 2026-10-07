@@ -9,6 +9,7 @@ import MeetingRoom from './Screens/MeetingRoom';
 import SignCollector from "./Screens/SignCollector";
 import SignTest from "./Screens/SignTest";
 import Insights from './Screens/Insights';
+import Schedule from './Screens/Schedule';
 function App() {
   return (
     <BrowserRouter>
@@ -24,6 +25,7 @@ function App() {
         <Route path="/signtest" element={<SignTest />} />
         <Route path="/insights" element={<Insights />} />
         <Route path="/insights/:id" element={<Insights />} />
+        <Route path="/schedule" element={<Schedule />} />
       </Routes>
     </BrowserRouter>
   );

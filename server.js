@@ -9,6 +9,7 @@ const jwt = require('jsonwebtoken');
 const authRoutes = require('./routes/auth');
 const Meeting = require('./models/Meeting');
 const { buildSummary } = require('./summary');
+const Schedule = require('./models/Schedule');
 
 const app = express();
 const server = http.createServer(app);
@@ -346,6 +347,76 @@ app.get('/api/my-meetings/:id', requireAuth, async (req, res) => {
     res.status(500).json({ error: 'Could not load this meeting' });
   }
 });
+
+
+// ===== SCHEDULED MEETINGS =====
+// Upcoming meetings (and ones that started in the last 2 hours)
+app.get('/api/schedules', requireAuth, async (req, res) => {
+  try {
+    const since = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const list = await Schedule.find({ hostId: req.userId, startsAt: { $gte: since } })
+      .sort({ startsAt: 1 })
+      .limit(30)
+      .lean();
+    res.json({
+      schedules: list.map((s) => ({
+        id: String(s._id),
+        title: s.title,
+        startsAt: s.startsAt,
+        roomId: s.roomId,
+      })),
+    });
+  } catch (err) {
+    console.error('Listing schedules failed:', err.message);
+    res.status(500).json({ error: 'Could not load scheduled meetings' });
+  }
+});
+
+app.post('/api/schedules', requireAuth, async (req, res) => {
+  try {
+    const title = String(req.body.title || '').trim().slice(0, 80) || 'Meeting';
+    const startsAt = new Date(req.body.startsAt);
+    if (isNaN(startsAt.getTime())) {
+      return res.status(400).json({ error: 'Please pick a date and time' });
+    }
+    if (startsAt.getTime() < Date.now() - 60 * 1000) {
+      return res.status(400).json({ error: 'That time has already passed' });
+    }
+
+    // make a short meeting code that is not already used
+    let roomId = '';
+    for (let i = 0; i < 5; i++) {
+      const code = Math.random().toString(36).substring(2, 9);
+      if (code.length === 7 && !(await Schedule.exists({ roomId: code }))) {
+        roomId = code;
+        break;
+      }
+    }
+    if (!roomId) return res.status(500).json({ error: 'Could not create a meeting code' });
+
+    const s = await Schedule.create({ hostId: req.userId, title, startsAt, roomId });
+    res.status(201).json({
+      schedule: { id: String(s._id), title: s.title, startsAt: s.startsAt, roomId: s.roomId },
+    });
+  } catch (err) {
+    console.error('Creating schedule failed:', err.message);
+    res.status(500).json({ error: 'Could not schedule the meeting' });
+  }
+});
+
+app.delete('/api/schedules/:id', requireAuth, async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    await Schedule.deleteOne({ _id: req.params.id, hostId: req.userId });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Deleting schedule failed:', err.message);
+    res.status(500).json({ error: 'Could not delete' });
+  }
+});
+
 
 // ===== SERVE THE BUILT REACT APP =====
 app.use(express.static(path.join(__dirname, 'client/dist')));
