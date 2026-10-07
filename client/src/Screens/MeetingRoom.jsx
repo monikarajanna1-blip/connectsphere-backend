@@ -34,33 +34,58 @@ const ICE_SERVERS = {
 // Turn the summary data from the server into a readable text file
 function formatSummary(d) {
   const out = [];
-  out.push('CONNECTSPHERE - MEETING SUMMARY');
-  out.push(`Room: ${d.roomId}`);
-  out.push(`Started: ${new Date(d.startedAt).toLocaleString()}`);
-  if (d.endedAt) out.push(`Ended: ${new Date(d.endedAt).toLocaleString()}`);
+  const start = new Date(d.startedAt);
+  const mins = Math.round((d.durationMs || 0) / 60000);
+  const duration = mins < 1 ? 'less than a minute' : `${mins} minute${mins === 1 ? '' : 's'}`;
+  const date = start.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+  const time = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  const people = [];
+  if (d.people.hostSpoke) people.push('1 host');
+  if (d.people.participants > 0) {
+    people.push(`${d.people.participants} participant${d.people.participants === 1 ? '' : 's'}`);
+  }
+
+  out.push('MEETING SUMMARY');
+  out.push(`Date: ${date}, ${time}`);
+  out.push(`Length: ${duration}`);
+  out.push(`People who spoke or signed: ${people.length ? people.join(', ') : 'nobody'}`);
   out.push('');
-  out.push('KEYWORDS');
-  out.push(d.keywords.length ? d.keywords.join(', ') : '(none)');
+  out.push('MAIN TOPICS');
+  out.push(d.topics.length ? d.topics.join(', ') : 'Not enough was said to pick topics.');
   out.push('');
-  out.push('SUMMARY');
-  if (d.summary.length) d.summary.forEach((s) => out.push(`- ${s}`));
-  else out.push('(nothing was recorded)');
+  out.push('WHAT WAS DISCUSSED');
+  if (d.discussed.length) {
+    d.discussed.forEach((s) => out.push(`- ${s.who} ${s.verb}: "${s.text}"`));
+  } else {
+    out.push('Nothing was recorded.');
+  }
   out.push('');
-  out.push('ACTION ITEMS');
-  if (d.actionItems.length) d.actionItems.forEach((a) => out.push(`- ${a.who}: ${a.text}`));
-  else out.push('(none found)');
+  out.push('THINGS TO DO');
+  if (d.actionItems.length) {
+    d.actionItems.forEach((a) => out.push(`- ${a.who}: ${a.text}`));
+  } else {
+    out.push('No tasks were mentioned.');
+  }
   out.push('');
-  out.push('FULL TRANSCRIPT');
+  out.push('EVERYTHING THAT WAS SAID');
   if (d.transcript.length) {
     d.transcript.forEach((t) => {
-      const time = t.time ? new Date(t.time).toLocaleTimeString() : '';
-      out.push(`[${time}] ${t.role}${t.kind === 'sign' ? ' (sign)' : ''}: ${t.text}`);
+      const when = t.time
+        ? new Date(t.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : '';
+      out.push(`${when}  ${t.who}${t.kind === 'sign' ? ' (sign)' : ''}: ${t.text}`);
     });
   } else {
-    out.push('(empty)');
+    out.push('Nothing was recorded.');
   }
   return out.join('\n');
 }
+
 
 function MeetingRoom() {
   const { roomId } = useParams();

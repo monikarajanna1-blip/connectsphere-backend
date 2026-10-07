@@ -168,7 +168,7 @@ app.get('/api/meetings/:roomId/summary', async (req, res) => {
       roomId: m.roomId,
       startedAt: m.startedAt,
       endedAt: m.endedAt || null,
-      ...buildSummary(m.lines || []),
+       ...buildSummary(m.lines || [], m.startedAt, m.endedAt),
     });
   } catch (err) {
     console.error('Summary failed:', err.message);
