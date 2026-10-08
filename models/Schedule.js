@@ -5,6 +5,7 @@ const scheduleSchema = new mongoose.Schema({
   title: { type: String, default: 'Meeting' },
   startsAt: { type: Date, index: true },
   roomId: String,
+  endedAt: Date,
   createdAt: { type: Date, default: Date.now },
 });
 

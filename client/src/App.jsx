@@ -11,9 +11,11 @@ import SignTest from "./Screens/SignTest";
 import Insights from './Screens/Insights';
 import Schedule from './Screens/Schedule';
 import Accessibility from './Screens/Accessibility';
+import ScheduleReminder from './ScheduleReminder';
 function App() {
   return (
     <BrowserRouter>
+     <ScheduleReminder />
       <Routes>
         <Route path="/" element={<Splash />} />
         <Route path="/login" element={<Login />} />
@@ -28,6 +30,7 @@ function App() {
         <Route path="/insights/:id" element={<Insights />} />
         <Route path="/schedule" element={<Schedule />} />
         <Route path="/accessibility" element={<Accessibility />} />
+        
       </Routes>
     </BrowserRouter>
   );

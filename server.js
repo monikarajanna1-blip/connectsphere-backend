@@ -11,7 +11,7 @@ const Meeting = require('./models/Meeting');
 const Schedule = require('./models/Schedule');
 const User = require('./models/User');
 const { buildSummary } = require('./summary');
-
+const createRoomExtras = require('./roomExtras');
 const app = express();
 const server = http.createServer(app);
 
@@ -19,6 +19,7 @@ const io = new Server(server, {
   cors: {
     origin: '*',
   },
+  maxHttpBufferSize: 12 * 1024 * 1024, // allows shared files up to 10 MB
 });
 
 app.use(cors());
@@ -50,12 +51,15 @@ const roomMeetings = new Map(); // roomId -> Meeting _id in MongoDB
 const roomStats = new Map(); // roomId -> Map(socketId -> engagement stats)
 
 const waitRoom = (roomId) => `wait:${roomId}`; // guests waiting for the host
+const MAX_PARTICIPANTS = 6; // video gets heavy for everyone beyond this
+const extras = createRoomExtras({ io, roomHosts, Schedule });
 const captionRoom = (roomId) => `captions:${roomId}`; // people who want live captions
 
 // A scheduled meeting counts as open from creation until 2 hours after its start time
 const findOpenSchedule = (roomId) =>
   Schedule.findOne({
     roomId,
+    endedAt: { $exists: false },
     startsAt: { $gte: new Date(Date.now() - 2 * 60 * 60 * 1000) },
   })
     .select('title startsAt')
@@ -186,7 +190,12 @@ io.on('connection', (socket) => {
         .catch(() => socket.emit('room-not-found'));
       return;
     }
-
+    // keep the call small enough for everyone's connection
+    const members = io.sockets.adapter.rooms.get(roomId);
+    if (members && members.size >= MAX_PARTICIPANTS && !members.has(socket.id)) {
+      socket.emit('room-full');
+      return;
+    }
     socket.leave(waitRoom(roomId));
     socket.data.roomId = roomId;
     socket.join(roomId);
@@ -220,6 +229,7 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('user-joined', socket.id);
     emitRoomCount(roomId);
     io.to(roomId).emit('host-id', roomHosts.get(roomId) || null);
+    extras.onJoin(socket, roomId, asHost, payload);
   });
 
   // This person switched live captions (spoken English as text) on or off
@@ -235,6 +245,7 @@ io.on('connection', (socket) => {
       console.log(`Host ${socket.id} ended room ${roomId}`);
       socket.to(roomId).emit('host-ended');
       roomHosts.delete(roomId);
+      Schedule.updateOne({ roomId }, { endedAt: new Date() }).catch(() => {});
     }
     if (typeof ack === 'function') ack();
   });
@@ -300,6 +311,7 @@ io.on('connection', (socket) => {
       const meetingId = roomMeetings.get(roomId);
       roomMeetings.delete(roomId);
       roomStats.delete(roomId);
+      Schedule.updateOne({ roomId }, { endedAt: new Date() }).catch(() => {});
       if (meetingId) {
         Meeting.updateOne({ _id: meetingId }, { endedAt: new Date() }).catch((err) =>
           console.error('Closing meeting failed:', err.message)
@@ -364,6 +376,7 @@ io.on('connection', (socket) => {
       if (st) st.speakingMs += 2000;
     }
     if (final && text) addTranscript(roomId, socket.id, 'sign', text);
+    extras.listen(socket);
   });
 });
 
@@ -474,7 +487,7 @@ app.put('/api/settings', requireAuth, async (req, res) => {
 app.get('/api/schedules', requireAuth, async (req, res) => {
   try {
     const since = new Date(Date.now() - 2 * 60 * 60 * 1000);
-    const list = await Schedule.find({ hostId: req.userId, startsAt: { $gte: since } })
+    const list = await Schedule.find({ hostId: req.userId,endedAt: { $exists: false }, startsAt: { $gte: since } })
       .sort({ startsAt: 1 })
       .limit(30)
       .lean();

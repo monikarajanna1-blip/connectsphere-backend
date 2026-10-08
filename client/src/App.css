@@ -741,3 +741,9 @@
 .glass-card {
   color: #f1f5f9;
 }
+
+.room-video-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}

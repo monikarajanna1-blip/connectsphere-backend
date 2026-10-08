@@ -21,6 +21,7 @@ import {
 } from '../signRecognizer';
 import { getCachedSettings, fetchSettings, captionStyle } from '../accessibility';
 import '../App.css';
+import MeetingExtras, { usePeopleNames } from '../MeetingExtras';
 
 const ICE_SERVERS = {
   iceServers: [
@@ -41,6 +42,13 @@ const ICE_SERVERS = {
       credential: 'openrelayproject',
     },
   ],
+};
+const myName = () => {
+  try {
+    return JSON.parse(localStorage.getItem('user'))?.name || 'Guest';
+  } catch (err) {
+    return 'Guest';
+  }
 };
 
 function MeetingRoom() {
@@ -71,7 +79,7 @@ function MeetingRoom() {
   const [hostId, setHostId] = useState(null);
   // peers: { [socketId]: MediaStream }
   const [peers, setPeers] = useState({});
-
+  const names = usePeopleNames();
   // ===== Accessibility preferences (saved on the user's account) =====
   const [prefs, setPrefs] = useState(getCachedSettings());
   const prefsRef = useRef(prefs);
@@ -205,6 +213,7 @@ function MeetingRoom() {
         isHost,
         token: localStorage.getItem('token'),
         captions: captionsRef.current,
+        name: myName(),
       });
 
     const onConnect = () => {
@@ -692,6 +701,7 @@ function MeetingRoom() {
           </button>
         )}
       </div>
+      <MeetingExtras isHost={isHost} />
       {error && <p className="v3-error room-error">{error}</p>}
 
       {hostLeftBanner && (
@@ -717,7 +727,13 @@ function MeetingRoom() {
           <RemoteVideo
             key={id}
             stream={peers[id]}
-            label={id === hostId ? 'Host' : 'Participant'}
+            label={
+              names[id]
+                ? names[id] + (id === hostId ? ' (Host)' : '')
+                : id === hostId
+                ? 'Host'
+                : 'Participant'
+            }
             onNeedsUnmute={() => setNeedsUnmute(true)}
           />
         ))}
