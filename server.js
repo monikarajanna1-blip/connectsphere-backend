@@ -332,6 +332,20 @@ io.on('connection', (socket) => {
       socket.to(captionRoom(roomId)).emit('speech-caption', { from: socket.id, text: clean });
     }
   });
+    // Words that are still being spoken: shown live to people who want captions,
+  // but not saved (the finished sentence is saved by 'transcript-line')
+  socket.on('speech-interim', ({ text }) => {
+    const roomId = socket.data.roomId;
+    if (!roomId) return;
+    const clean = String(text || '').trim().slice(0, 300);
+    if (!clean) return;
+    // nobody wants captions: do nothing
+    if ((io.sockets.adapter.rooms.get(captionRoom(roomId))?.size || 0) === 0) return;
+    socket.to(captionRoom(roomId)).volatile.emit('speech-caption', {
+      from: socket.id,
+      text: clean,
+    });
+  });
 
   // Relay sign-language captions to everyone else in the room
   socket.on('sign-caption', ({ text, final, word }) => {

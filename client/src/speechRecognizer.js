@@ -2,7 +2,7 @@
 const norm = (s) =>
   s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
-export function startSpeechRecognition({ onFinal, onError, lang = 'en-IN' }) {
+export function startSpeechRecognition({ onFinal, onInterim, onError, lang = 'en-IN' }) {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) {
     onError?.('Speech recognition is not supported in this browser. Use Chrome or Edge.');
@@ -17,7 +17,7 @@ export function startSpeechRecognition({ onFinal, onError, lang = 'en-IN' }) {
   let buffer = ''; // the sentence being heard right now
   let lastSent = '';
 
-  // Send the buffered sentence once
+  // Send the buffered sentence once (this is what gets saved in the transcript)
   const sendBuffer = () => {
     clearTimeout(sendTimer);
     const text = buffer.trim();
@@ -63,6 +63,8 @@ export function startSpeechRecognition({ onFinal, onError, lang = 'en-IN' }) {
       for (let i = e.resultIndex; i < e.results.length; i++) {
         addText(e.results[i][0].transcript);
       }
+      // show the words right away, while the person is still talking
+      if (buffer) onInterim?.(buffer);
     };
 
     rec.onerror = (e) => {

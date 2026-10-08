@@ -109,7 +109,7 @@ function MeetingRoom() {
   const showSpeechCaption = (fromId, text) => {
     clearTimeout(speechTimerRef.current);
     setSpeechCaption({ fromId, text });
-    speechTimerRef.current = setTimeout(() => setSpeechCaption(null), 7000);
+    speechTimerRef.current = setTimeout(() => setSpeechCaption(null), 4000);
   };
 
   const labelFor = (id) => {
@@ -425,12 +425,20 @@ function MeetingRoom() {
       disposeSignRecognition();
     };
   }, []);
-
-  // Silently listen to my voice and send each sentence to the server.
-  // It only listens while my mic is on and I am actually in the meeting.
+  // Silently listen to my voice. Finished sentences are saved for the summary,
+  // and the words are streamed live to people who turned captions on.
   useEffect(() => {
     if (!speechOn || !micOn || waiting) return;
+    let lastText = '';
+    let lastAt = 0;
     const stop = startSpeechRecognition({
+      onInterim: (text) => {
+        const t = Date.now();
+        if (text === lastText || t - lastAt < 250) return; // at most 4 updates a second
+        lastText = text;
+        lastAt = t;
+        socket.emit('speech-interim', { text });
+      },
       onFinal: (text) => socket.emit('transcript-line', { text, kind: 'speech' }),
       onError: (msg) => {
         console.warn('Speech recognition:', msg);
@@ -439,6 +447,7 @@ function MeetingRoom() {
     });
     return stop;
   }, [speechOn, micOn, waiting]);
+  
 
   // Measure how long I actually make sound (works with the camera off)
   useEffect(() => {
