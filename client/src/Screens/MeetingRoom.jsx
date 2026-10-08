@@ -120,9 +120,9 @@ function MeetingRoom() {
     speechTimerRef.current = setTimeout(() => setSpeechCaption(null), 4000);
   };
 
-  const labelFor = (id) => {
+    const labelFor = (id) => {
     if (id === 'me') return 'You';
-    return id === hostId ? 'Host' : 'Participant';
+    return names[id] || (id === hostId ? 'Host' : 'Participant');
   };
 
   const stopMedia = () => {
