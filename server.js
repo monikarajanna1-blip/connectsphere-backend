@@ -9,6 +9,7 @@ const jwt = require('jsonwebtoken');
 const authRoutes = require('./routes/auth');
 const Meeting = require('./models/Meeting');
 const Schedule = require('./models/Schedule');
+const User = require('./models/User');
 const { buildSummary } = require('./summary');
 
 const app = express();
@@ -49,6 +50,8 @@ const roomMeetings = new Map(); // roomId -> Meeting _id in MongoDB
 const roomStats = new Map(); // roomId -> Map(socketId -> engagement stats)
 
 const waitRoom = (roomId) => `wait:${roomId}`; // guests waiting for the host
+const captionRoom = (roomId) => `captions:${roomId}`; // people who want live captions
+
 // A scheduled meeting counts as open from creation until 2 hours after its start time
 const findOpenSchedule = (roomId) =>
   Schedule.findOne({
@@ -57,9 +60,18 @@ const findOpenSchedule = (roomId) =>
   })
     .select('title startsAt')
     .lean();
+
 const emitRoomCount = (roomId) => {
   const size = io.sockets.adapter.rooms.get(roomId)?.size || 0;
   io.to(roomId).emit('room-count', size);
+};
+
+// Put this socket in (or take it out of) the live-captions group of its room
+const applyCaptionPref = (socket) => {
+  const roomId = socket.data.roomId;
+  if (!roomId) return;
+  if (socket.data.wantsCaptions) socket.join(captionRoom(roomId));
+  else socket.leave(captionRoom(roomId));
 };
 
 // Remember that this account took part in the meeting
@@ -124,10 +136,12 @@ const addTranscript = (roomId, socketId, kind, text) => {
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
-   socket.on('join-room', async (raw) => {
+  socket.on('join-room', async (raw) => {
     const payload = typeof raw === 'object' && raw !== null ? raw : { roomId: raw };
-    const roomId = String(payload.roomId).trim();
+    // codes are lowercase; phones often capitalise the first letter
+    const roomId = String(payload.roomId).trim().toLowerCase();
     const userId = payload.token ? userIdFromToken(payload.token) : null;
+    socket.data.wantsCaptions = !!payload.captions;
 
     // The browser says whether it is the host, but the server double-checks:
     // a scheduled meeting can only be started by the person who scheduled it
@@ -176,6 +190,7 @@ io.on('connection', (socket) => {
     socket.leave(waitRoom(roomId));
     socket.data.roomId = roomId;
     socket.join(roomId);
+    applyCaptionPref(socket);
 
     // link this account to the meeting (the host was linked when it was created)
     if (!asHost) linkMember(roomId, userId);
@@ -206,6 +221,13 @@ io.on('connection', (socket) => {
     emitRoomCount(roomId);
     io.to(roomId).emit('host-id', roomHosts.get(roomId) || null);
   });
+
+  // This person switched live captions (spoken English as text) on or off
+  socket.on('caption-pref', ({ on }) => {
+    socket.data.wantsCaptions = !!on;
+    applyCaptionPref(socket);
+  });
+
   // Host ends the meeting: others are asked whether to continue or leave
   socket.on('end-call', (ack) => {
     const roomId = socket.data.roomId;
@@ -298,11 +320,17 @@ io.on('connection', (socket) => {
     io.to(to).emit('ice-candidate', { from: socket.id, candidate });
   });
 
-  // Spoken sentence from a participant's browser (saved, not shown)
+  // Spoken sentence from a participant's browser: saved for the summary,
+  // and shown as a caption to people who turned live captions on
   socket.on('transcript-line', ({ text, kind }) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
-    addTranscript(roomId, socket.id, kind === 'sign' ? 'sign' : 'speech', text);
+    const isSign = kind === 'sign';
+    addTranscript(roomId, socket.id, isSign ? 'sign' : 'speech', text);
+    const clean = String(text || '').trim().slice(0, 300);
+    if (!isSign && clean) {
+      socket.to(captionRoom(roomId)).emit('speech-caption', { from: socket.id, text: clean });
+    }
   });
 
   // Relay sign-language captions to everyone else in the room
@@ -381,17 +409,49 @@ app.get('/api/my-meetings/:id', requireAuth, async (req, res) => {
     res.status(500).json({ error: 'Could not load this meeting' });
   }
 });
+
 // Is this meeting code real? Lets the Join box reject a wrong code before anyone enters a room.
 // live = the host is in it, scheduled = waiting for the host to start, invalid = no such meeting
 app.get('/api/rooms/:code', requireAuth, async (req, res) => {
   try {
-    const code = String(req.params.code).trim();
+    const code = String(req.params.code).trim().toLowerCase();
     if (roomHosts.has(code) || roomMeetings.has(code)) return res.json({ status: 'live' });
     const s = await findOpenSchedule(code);
     res.json({ status: s ? 'scheduled' : 'invalid' });
   } catch (err) {
     console.error('Room check failed:', err.message);
     res.status(500).json({ error: 'Could not check the code' });
+  }
+});
+
+// ===== ACCESSIBILITY SETTINGS =====
+const CAPTION_SIZES = ['small', 'medium', 'large'];
+const cleanSettings = (b = {}) => ({
+  liveCaptions: !!b.liveCaptions,
+  speakSigns: b.speakSigns === undefined ? true : !!b.speakSigns,
+  autoSign: !!b.autoSign,
+  highContrast: !!b.highContrast,
+  captionSize: CAPTION_SIZES.includes(b.captionSize) ? b.captionSize : 'medium',
+});
+
+app.get('/api/settings', requireAuth, async (req, res) => {
+  try {
+    const u = await User.findById(req.userId).select('accessibility').lean();
+    res.json(cleanSettings(u?.accessibility));
+  } catch (err) {
+    console.error('Loading settings failed:', err.message);
+    res.status(500).json({ error: 'Could not load settings' });
+  }
+});
+
+app.put('/api/settings', requireAuth, async (req, res) => {
+  try {
+    const settings = cleanSettings(req.body);
+    await User.updateOne({ _id: req.userId }, { $set: { accessibility: settings } });
+    res.json(settings);
+  } catch (err) {
+    console.error('Saving settings failed:', err.message);
+    res.status(500).json({ error: 'Could not save settings' });
   }
 });
 

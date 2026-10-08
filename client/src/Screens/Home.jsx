@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { meetingsApi } from '../api';
 import { formatSummary, downloadText, fmtDur } from '../formatSummary';
+import { clearSettings } from '../accessibility';
 import '../App.css';
 
 const REMIND_BEFORE_MS = 5 * 60 * 1000; // heads-up this long before the start time
@@ -28,7 +29,7 @@ function Home() {
   const [recent, setRecent] = useState([]);
   const [recentLoading, setRecentLoading] = useState(true);
   const [schedules, setSchedules] = useState([]);
-  const [auto, setAuto] = useState(null); 
+  const [auto, setAuto] = useState(null);
   const [now, setNow] = useState(Date.now());
   const [dismissed, setDismissed] = useState({});
   const [joinError, setJoinError] = useState('');
@@ -58,8 +59,7 @@ function Home() {
       .catch(() => {});
   }, [user]);
 
-
-    // Clock for the live countdown
+  // Clock for the live countdown
   useEffect(() => {
     const tick = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(tick);
@@ -110,10 +110,10 @@ function Home() {
   useEffect(() => {
     if (!user || auto) return;
     const check = () => {
-      const now = Date.now();
+      const nowMs = Date.now();
       const due = schedules.find((s) => {
         const t = new Date(s.startsAt).getTime();
-        return t <= now && now - t < 10 * 60 * 1000 && !sessionStorage.getItem(`as-${s.id}`);
+        return t <= nowMs && nowMs - t < 10 * 60 * 1000 && !sessionStorage.getItem(`as-${s.id}`);
       });
       if (due) {
         sessionStorage.setItem(`as-${due.id}`, '1');
@@ -142,6 +142,7 @@ function Home() {
   const handleLogout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
+    clearSettings();
     navigate('/login');
   };
 
@@ -155,9 +156,11 @@ function Home() {
     sessionStorage.setItem(`as-${s.id}`, '1');
     navigate(`/meeting/${s.roomId}`, { state: { isHost: true } });
   };
+
   const handleJoinMeeting = async (e) => {
     e.preventDefault();
-    const code = joinCode.trim();
+    // codes are lowercase; phones often capitalise the first letter
+    const code = joinCode.trim().toLowerCase();
     if (!code) return;
     setJoinError('');
     setJoining(true);
@@ -178,7 +181,7 @@ function Home() {
       setJoining(false);
     }
   };
-  
+
   const handleDownload = async (m) => {
     try {
       const res = await meetingsApi.get(`/my-meetings/${m.id}`);
@@ -190,7 +193,7 @@ function Home() {
 
   const handleSchedule = () => navigate('/schedule');
   const handleInsights = () => navigate('/insights');
-  const handleAccessibility = () => alert('Accessibility Settings — coming soon');
+  const handleAccessibility = () => navigate('/accessibility');
 
   if (!user) return null;
 
@@ -213,7 +216,7 @@ function Home() {
       </div>
 
       <div className="dash-main">
-                {soon && (
+        {soon && (
           <div
             className="glass-card"
             style={{
@@ -280,6 +283,9 @@ function Home() {
                   className="join-input"
                   placeholder="Meeting code"
                   value={joinCode}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   onChange={(e) => setJoinCode(e.target.value)}
                 />
                 <button type="submit" className="join-go" disabled={joining}>

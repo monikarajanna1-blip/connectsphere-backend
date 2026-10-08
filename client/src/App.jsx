@@ -10,6 +10,7 @@ import SignCollector from "./Screens/SignCollector";
 import SignTest from "./Screens/SignTest";
 import Insights from './Screens/Insights';
 import Schedule from './Screens/Schedule';
+import Accessibility from './Screens/Accessibility';
 function App() {
   return (
     <BrowserRouter>
@@ -26,6 +27,7 @@ function App() {
         <Route path="/insights" element={<Insights />} />
         <Route path="/insights/:id" element={<Insights />} />
         <Route path="/schedule" element={<Schedule />} />
+        <Route path="/accessibility" element={<Accessibility />} />
       </Routes>
     </BrowserRouter>
   );

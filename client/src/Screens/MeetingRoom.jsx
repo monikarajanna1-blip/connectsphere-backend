@@ -1,6 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Copy, Check, X, Hand } from 'lucide-react';
+import {
+  Mic,
+  MicOff,
+  Video,
+  VideoOff,
+  PhoneOff,
+  Copy,
+  Check,
+  X,
+  Hand,
+  MessageSquare,
+} from 'lucide-react';
 import socket from '../socket';
 import { startSpeechRecognition } from '../speechRecognizer';
 import {
@@ -8,6 +19,7 @@ import {
   preloadSignRecognition,
   disposeSignRecognition,
 } from '../signRecognizer';
+import { getCachedSettings, fetchSettings, captionStyle } from '../accessibility';
 import '../App.css';
 
 const ICE_SERVERS = {
@@ -46,17 +58,27 @@ function MeetingRoom() {
 
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
+  const [camReady, setCamReady] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
   const [needsUnmute, setNeedsUnmute] = useState(false);
   const [hostEndedPopup, setHostEndedPopup] = useState(false);
   const [roomNotFound, setRoomNotFound] = useState(false);
-  const [waiting, setWaiting] = useState(null); // { title } while waiting for the host to start
+  const [waiting, setWaiting] = useState(null); // { title, startsAt } while waiting for the host
+  const [nowTick, setNowTick] = useState(Date.now());
   const [showStartPopup, setShowStartPopup] = useState(isHost);
   const [hostLeftBanner, setHostLeftBanner] = useState(false);
   const [hostId, setHostId] = useState(null);
   // peers: { [socketId]: MediaStream }
   const [peers, setPeers] = useState({});
+
+  // ===== Accessibility preferences (saved on the user's account) =====
+  const [prefs, setPrefs] = useState(getCachedSettings());
+  const prefsRef = useRef(prefs);
+  prefsRef.current = prefs;
+  const [captionsOn, setCaptionsOn] = useState(() => getCachedSettings().liveCaptions);
+  const captionsRef = useRef(getCachedSettings().liveCaptions);
+  const autoSignDone = useRef(false);
 
   // ===== Sign-language captions (shown live) =====
   const [signOn, setSignOn] = useState(false);
@@ -65,7 +87,11 @@ function MeetingRoom() {
   const [caption, setCaption] = useState(null); // { fromId, text }  fromId = 'me' or a socket id
   const captionTimerRef = useRef(null);
 
-  // ===== Silent speech transcription (saved for the summary, not shown) =====
+  // ===== Live captions of spoken English (only if the user turned them on) =====
+  const [speechCaption, setSpeechCaption] = useState(null); // { fromId, text }
+  const speechTimerRef = useRef(null);
+
+  // ===== Silent speech transcription (saved for the summary) =====
   const [speechOn, setSpeechOn] = useState(true);
 
   const showCaption = (fromId, text, final) => {
@@ -78,6 +104,12 @@ function MeetingRoom() {
     if (final) {
       captionTimerRef.current = setTimeout(() => setCaption(null), 6000);
     }
+  };
+
+  const showSpeechCaption = (fromId, text) => {
+    clearTimeout(speechTimerRef.current);
+    setSpeechCaption({ fromId, text });
+    speechTimerRef.current = setTimeout(() => setSpeechCaption(null), 7000);
   };
 
   const labelFor = (id) => {
@@ -165,12 +197,14 @@ function MeetingRoom() {
     };
 
     // The token tells the server which account this is, so the meeting
-    // shows up in that user's Recent Meetings
+    // shows up in that user's Recent Meetings. "captions" says whether this
+    // person wants spoken English shown as text.
     const joinRoom = () =>
       socket.emit('join-room', {
         roomId,
         isHost,
         token: localStorage.getItem('token'),
+        captions: captionsRef.current,
       });
 
     const onConnect = () => {
@@ -186,7 +220,10 @@ function MeetingRoom() {
 
     // A scheduled meeting that the host has not started yet: wait in the lobby
     const onWaiting = (info) => {
-      setWaiting({ title: info?.title || 'this meeting' });
+      setWaiting({
+        title: info?.title || 'this meeting',
+        startsAt: info?.startsAt || null,
+      });
     };
 
     // The host started: join automatically
@@ -258,12 +295,17 @@ function MeetingRoom() {
     };
 
     // A caption arrived from another participant who is signing.
-    // Each new word is spoken right away.
+    // Each new word is spoken right away (if the user kept that setting on).
     const onSignCaption = ({ from, text, final, word }) => {
       showCaption(from, text, final);
-      if (word && 'speechSynthesis' in window) {
+      if (word && prefsRef.current.speakSigns && 'speechSynthesis' in window) {
         window.speechSynthesis.speak(new SpeechSynthesisUtterance(word));
       }
+    };
+
+    // Someone spoke, and this user turned live captions on
+    const onSpeechCaption = ({ from, text }) => {
+      showSpeechCaption(from, text);
     };
 
     socket.on('connect', onConnect);
@@ -279,6 +321,7 @@ function MeetingRoom() {
     socket.on('host-left', onHostLeft);
     socket.on('host-id', onHostId);
     socket.on('sign-caption', onSignCaption);
+    socket.on('speech-caption', onSpeechCaption);
 
     if (!socket.connected) socket.connect();
 
@@ -302,6 +345,7 @@ function MeetingRoom() {
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = localStream;
         }
+        setCamReady(true);
 
         if (socket.connected) joinRoom();
       } catch (err) {
@@ -329,11 +373,41 @@ function MeetingRoom() {
       socket.off('host-left', onHostLeft);
       socket.off('host-id', onHostId);
       socket.off('sign-caption', onSignCaption);
+      socket.off('speech-caption', onSpeechCaption);
       socket.disconnect();
       stopMedia();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
+
+  // Load this user's saved accessibility settings
+  useEffect(() => {
+    if (!localStorage.getItem('token')) return;
+    fetchSettings()
+      .then((s) => {
+        setPrefs(s);
+        captionsRef.current = s.liveCaptions;
+        setCaptionsOn(s.liveCaptions);
+        socket.emit('caption-pref', { on: s.liveCaptions });
+      })
+      .catch(() => {});
+  }, []);
+
+  // Start sign recognition by itself if the user asked for that (once per meeting)
+  useEffect(() => {
+    if (!camReady || waiting || autoSignDone.current) return;
+    if (prefs.autoSign) {
+      autoSignDone.current = true;
+      setSignOn(true);
+    }
+  }, [camReady, waiting, prefs.autoSign]);
+
+  // Tick every second while waiting, so the countdown updates
+  useEffect(() => {
+    if (!waiting) return;
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [waiting]);
 
   // Load the sign model in the background a few seconds after the room opens
   // (skipped in Firefox, where it is heavy; it loads when the hand button is pressed)
@@ -475,6 +549,15 @@ function MeetingRoom() {
     }
   };
 
+  // Turn live captions of spoken English on or off for this meeting
+  const toggleCaptions = () => {
+    const next = !captionsOn;
+    setCaptionsOn(next);
+    captionsRef.current = next;
+    if (!next) setSpeechCaption(null);
+    socket.emit('caption-pref', { on: next });
+  };
+
   // Leave and go home. Speech and sign recognition stop first, so the
   // last sentence is sent; the connection closes a moment later.
   const finishLeave = () => {
@@ -565,6 +648,28 @@ function MeetingRoom() {
   const peerIds = Object.keys(peers);
   const othersRemain = peerIds.filter((id) => id !== hostId).length > 0;
 
+  // Text under "Waiting for the host": scheduled time and a live countdown
+  const waitText = (() => {
+    if (!waiting?.startsAt) return '';
+    const start = new Date(waiting.startsAt);
+    const at = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const diff = start.getTime() - nowTick;
+    if (diff > 1000) {
+      const m = Math.floor(diff / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+      return `Scheduled for ${at} · starts in ${m}:${String(s).padStart(2, '0')}`;
+    }
+    return `Scheduled for ${at} · waiting for the host to press Start`;
+  })();
+
+  // Look of the caption boxes, from the user's accessibility settings
+  const capBox = {
+    ...captionStyle(prefs),
+    padding: '10px 18px',
+    borderRadius: 12,
+    maxWidth: '100%',
+  };
+
   return (
     <div className="room-container">
       <div className="room-header">
@@ -619,7 +724,8 @@ function MeetingRoom() {
         <p style={{ textAlign: 'center' }}>Loading sign recognition...</p>
       )}
       {signError && <p className="v3-error room-error">{signError}</p>}
-      {caption && (
+
+      {(caption || speechCaption) && (
         <div
           style={{
             position: 'fixed',
@@ -627,16 +733,24 @@ function MeetingRoom() {
             bottom: 110,
             transform: 'translateX(-50%)',
             pointerEvents: 'none',
-            background: 'rgba(0,0,0,0.8)',
-            color: '#fff',
-            padding: '10px 18px',
-            borderRadius: 12,
-            fontSize: 22,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 8,
             maxWidth: '90%',
             zIndex: 50,
           }}
         >
-          <strong>{labelFor(caption.fromId)}:</strong> {caption.text}
+          {speechCaption && (
+            <div style={capBox}>
+              <strong>{labelFor(speechCaption.fromId)}:</strong> {speechCaption.text}
+            </div>
+          )}
+          {caption && (
+            <div style={capBox}>
+              <strong>{labelFor(caption.fromId)} (sign):</strong> {caption.text}
+            </div>
+          )}
         </div>
       )}
 
@@ -652,6 +766,14 @@ function MeetingRoom() {
           onClick={toggleCam}
         >
           {camOn ? <Video size={20} /> : <VideoOff size={20} />}
+        </button>
+        <button
+          className="control-btn"
+          style={captionsOn ? { background: '#6c5ce7' } : undefined}
+          onClick={toggleCaptions}
+          title="Live captions for spoken English"
+        >
+          <MessageSquare size={20} />
         </button>
         <button
           className="control-btn"
@@ -701,6 +823,11 @@ function MeetingRoom() {
                 Connect<span>Sphere</span>
               </div>
               <p className="ended-title">Waiting for the host</p>
+              {waitText && (
+                <p className="code-modal-text" style={{ fontWeight: 600 }}>
+                  {waitText}
+                </p>
+              )}
               <p className="code-modal-text">
                 "{waiting.title}" hasn't started yet. You'll join automatically
                 as soon as the host starts it. You can leave this page open.
