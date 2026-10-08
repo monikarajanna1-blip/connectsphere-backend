@@ -737,3 +737,7 @@
   flex-shrink: 0;
   display: flex;
 }
+
+.glass-card {
+  color: #f1f5f9;
+}

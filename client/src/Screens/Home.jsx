@@ -15,13 +15,24 @@ import { meetingsApi } from '../api';
 import { formatSummary, downloadText, fmtDur } from '../formatSummary';
 import '../App.css';
 
+const REMIND_BEFORE_MS = 5 * 60 * 1000; // heads-up this long before the start time
+
+const fmtCountdown = (ms) => {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+
 function Home() {
   const [user, setUser] = useState(null);
   const [joinCode, setJoinCode] = useState('');
   const [recent, setRecent] = useState([]);
   const [recentLoading, setRecentLoading] = useState(true);
   const [schedules, setSchedules] = useState([]);
-  const [auto, setAuto] = useState(null); // { id, title, roomId, seconds } while the countdown runs
+  const [auto, setAuto] = useState(null); 
+  const [now, setNow] = useState(Date.now());
+  const [dismissed, setDismissed] = useState({});
+  const [joinError, setJoinError] = useState('');
+  const [joining, setJoining] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -46,6 +57,53 @@ function Home() {
       .then((res) => setSchedules(res.data.schedules))
       .catch(() => {});
   }, [user]);
+
+
+    // Clock for the live countdown
+  useEffect(() => {
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, []);
+
+  // Refresh the scheduled list every 30 seconds (a meeting scheduled elsewhere shows up)
+  useEffect(() => {
+    if (!user) return;
+    const refresh = setInterval(() => {
+      meetingsApi
+        .get('/schedules')
+        .then((res) => setSchedules(res.data.schedules))
+        .catch(() => {});
+    }, 30000);
+    return () => clearInterval(refresh);
+  }, [user]);
+
+  // The meeting to remind the host about: starts within 5 minutes, or just started
+  const soon = schedules.find((s) => {
+    const t = new Date(s.startsAt).getTime();
+    return (
+      t - now <= REMIND_BEFORE_MS &&
+      now - t < 10 * 60 * 1000 &&
+      !dismissed[s.id] &&
+      !sessionStorage.getItem(`as-${s.id}`)
+    );
+  });
+
+  // Browser notification, once per meeting (helps when the tab is in the background)
+  useEffect(() => {
+    if (!soon || !('Notification' in window) || Notification.permission !== 'granted') return;
+    if (sessionStorage.getItem(`nn-${soon.id}`)) return;
+    sessionStorage.setItem(`nn-${soon.id}`, '1');
+    try {
+      new Notification('Your meeting is about to start', {
+        body: `"${soon.title}" starts at ${new Date(soon.startsAt).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        })}`,
+      });
+    } catch (err) {
+      // some phone browsers do not allow this; the banner still shows
+    }
+  }, [soon]);
 
   // When a scheduled time arrives (and it was started less than 10 minutes ago),
   // show the countdown once for that meeting
@@ -97,14 +155,30 @@ function Home() {
     sessionStorage.setItem(`as-${s.id}`, '1');
     navigate(`/meeting/${s.roomId}`, { state: { isHost: true } });
   };
-
-  const handleJoinMeeting = (e) => {
+  const handleJoinMeeting = async (e) => {
     e.preventDefault();
-    if (joinCode.trim()) {
-      navigate(`/meeting/${joinCode.trim()}`);
+    const code = joinCode.trim();
+    if (!code) return;
+    setJoinError('');
+    setJoining(true);
+    try {
+      const res = await meetingsApi.get(`/rooms/${encodeURIComponent(code)}`);
+      if (res.data.status === 'invalid') {
+        setJoinError('No meeting found with that code. Check it and try again.');
+        return;
+      }
+      navigate(`/meeting/${code}`);
+    } catch (err) {
+      setJoinError(
+        err.response?.status === 401
+          ? 'Please log in again.'
+          : 'Could not check the code. Try again.'
+      );
+    } finally {
+      setJoining(false);
     }
   };
-
+  
   const handleDownload = async (m) => {
     try {
       const res = await meetingsApi.get(`/my-meetings/${m.id}`);
@@ -139,6 +213,41 @@ function Home() {
       </div>
 
       <div className="dash-main">
+                {soon && (
+          <div
+            className="glass-card"
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 12,
+              flexWrap: 'wrap',
+              marginBottom: 16,
+              padding: '14px 18px',
+              border: '1px solid rgba(125, 211, 252, 0.5)',
+            }}
+          >
+            <div>
+              <strong>"{soon.title}"</strong>
+              <div style={{ opacity: 0.8, fontSize: 13, marginTop: 3 }}>
+                {new Date(soon.startsAt).getTime() > now
+                  ? `Starts in ${fmtCountdown(new Date(soon.startsAt).getTime() - now)}`
+                  : 'It is time to start'}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="join-go" onClick={() => startScheduled(soon)}>
+                Start now
+              </button>
+              <button
+                className="join-go"
+                onClick={() => setDismissed((d) => ({ ...d, [soon.id]: true }))}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
         <h1 className="welcome">Welcome back, {user.name.split(' ')[0]}</h1>
         <p className="subtitle">
           <Sparkles size={13} />
@@ -173,10 +282,13 @@ function Home() {
                   value={joinCode}
                   onChange={(e) => setJoinCode(e.target.value)}
                 />
-                <button type="submit" className="join-go">
+                <button type="submit" className="join-go" disabled={joining}>
                   Go
                 </button>
               </form>
+              {joinError && (
+                <p style={{ color: '#f87171', fontSize: 12, margin: '8px 0 0' }}>{joinError}</p>
+              )}
             </div>
 
             <div className="glass-card" onClick={handleSchedule}>

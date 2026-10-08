@@ -49,7 +49,14 @@ const roomMeetings = new Map(); // roomId -> Meeting _id in MongoDB
 const roomStats = new Map(); // roomId -> Map(socketId -> engagement stats)
 
 const waitRoom = (roomId) => `wait:${roomId}`; // guests waiting for the host
-
+// A scheduled meeting counts as open from creation until 2 hours after its start time
+const findOpenSchedule = (roomId) =>
+  Schedule.findOne({
+    roomId,
+    startsAt: { $gte: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+  })
+    .select('title startsAt')
+    .lean();
 const emitRoomCount = (roomId) => {
   const size = io.sockets.adapter.rooms.get(roomId)?.size || 0;
   io.to(roomId).emit('room-count', size);
@@ -117,12 +124,24 @@ const addTranscript = (roomId, socketId, kind, text) => {
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
-  socket.on('join-room', (raw) => {
+   socket.on('join-room', async (raw) => {
     const payload = typeof raw === 'object' && raw !== null ? raw : { roomId: raw };
     const roomId = String(payload.roomId).trim();
     const userId = payload.token ? userIdFromToken(payload.token) : null;
 
-    if (payload.isHost) {
+    // The browser says whether it is the host, but the server double-checks:
+    // a scheduled meeting can only be started by the person who scheduled it
+    let asHost = !!payload.isHost;
+    if (asHost) {
+      try {
+        const someoneElses = await Schedule.exists({ roomId, hostId: { $ne: userId || null } });
+        if (someoneElses) asHost = false;
+      } catch (err) {
+        asHost = false;
+      }
+    }
+
+    if (asHost) {
       if (!roomHosts.has(roomId)) {
         roomHosts.set(roomId, socket.id);
         if (!roomMeetings.has(roomId)) {
@@ -138,17 +157,15 @@ io.on('connection', (socket) => {
         io.to(waitRoom(roomId)).emit('host-started');
       }
     } else if (!roomHosts.has(roomId) && !roomMeetings.has(roomId)) {
-      // The host has not started yet. If the meeting was scheduled, the guest
-      // waits and is let in automatically; otherwise they get a friendly message.
-      Schedule.findOne({ roomId })
-        .select('title startsAt')
-        .lean()
+      // The host has not started yet. A recently scheduled meeting waits in
+      // the lobby; any other code is rejected.
+      findOpenSchedule(roomId)
         .then((s) => {
           if (s) {
             socket.join(waitRoom(roomId));
             socket.emit('waiting-for-host', { title: s.title, startsAt: s.startsAt });
           } else {
-            console.log(`${socket.id} tried to join a room not started yet: ${roomId}`);
+            console.log(`${socket.id} tried to join an unknown room: ${roomId}`);
             socket.emit('room-not-found');
           }
         })
@@ -161,7 +178,7 @@ io.on('connection', (socket) => {
     socket.join(roomId);
 
     // link this account to the meeting (the host was linked when it was created)
-    if (!payload.isHost) linkMember(roomId, userId);
+    if (!asHost) linkMember(roomId, userId);
 
     // start tracking this person's engagement (join-room can arrive twice)
     if (!roomStats.has(roomId)) roomStats.set(roomId, new Map());
@@ -169,7 +186,7 @@ io.on('connection', (socket) => {
       const now = Date.now();
       roomStats.get(roomId).set(socket.id, {
         sid: socket.id,
-        role: payload.isHost && roomHosts.get(roomId) === socket.id ? 'Host' : 'Participant',
+        role: asHost && roomHosts.get(roomId) === socket.id ? 'Host' : 'Participant',
         joinedAt: now,
         leftAt: null,
         speakingMs: 0,
@@ -189,7 +206,6 @@ io.on('connection', (socket) => {
     emitRoomCount(roomId);
     io.to(roomId).emit('host-id', roomHosts.get(roomId) || null);
   });
-
   // Host ends the meeting: others are asked whether to continue or leave
   socket.on('end-call', (ack) => {
     const roomId = socket.data.roomId;
@@ -363,6 +379,19 @@ app.get('/api/my-meetings/:id', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('Meeting report failed:', err.message);
     res.status(500).json({ error: 'Could not load this meeting' });
+  }
+});
+// Is this meeting code real? Lets the Join box reject a wrong code before anyone enters a room.
+// live = the host is in it, scheduled = waiting for the host to start, invalid = no such meeting
+app.get('/api/rooms/:code', requireAuth, async (req, res) => {
+  try {
+    const code = String(req.params.code).trim();
+    if (roomHosts.has(code) || roomMeetings.has(code)) return res.json({ status: 'live' });
+    const s = await findOpenSchedule(code);
+    res.json({ status: s ? 'scheduled' : 'invalid' });
+  } catch (err) {
+    console.error('Room check failed:', err.message);
+    res.status(500).json({ error: 'Could not check the code' });
   }
 });
 

@@ -53,6 +53,11 @@ function Schedule() {
       return;
     }
     setBusy(true);
+       // ask once for permission to show the "meeting is about to start" notification
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+
     try {
       await meetingsApi.post('/schedules', {
         title,
