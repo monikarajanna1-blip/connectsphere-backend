@@ -11,6 +11,18 @@ const lineSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const chatSchema = new mongoose.Schema(
+  {
+    from: String,
+    name: String,
+    role: String, // 'Host' or 'Participant'
+    kind: { type: String, default: 'message' }, // 'message' or 'file' (only the file name is kept)
+    text: String,
+    time: Number,
+  },
+  { _id: false }
+);
+
 const participantSchema = new mongoose.Schema(
   {
     sid: String,
@@ -29,13 +41,14 @@ const participantSchema = new mongoose.Schema(
 
 const meetingSchema = new mongoose.Schema({
   roomId: { type: String, index: true },
-  title: { type: String }, 
+  title: { type: String },
   scheduledFor: { type: Date },
   hostId: { type: mongoose.Schema.Types.ObjectId },
   memberIds: { type: [mongoose.Schema.Types.ObjectId], index: true },
   startedAt: { type: Date, default: Date.now },
   endedAt: Date,
   lines: [lineSchema],
+  chat: [chatSchema],
   participants: [participantSchema],
 });
 

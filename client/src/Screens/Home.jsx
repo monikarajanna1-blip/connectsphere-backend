@@ -23,6 +23,14 @@ const fmtCountdown = (ms) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
 
+const fmtDate = (d) =>
+  new Date(d).toLocaleString([], {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
 function Home() {
   const [user, setUser] = useState(null);
   const [joinCode, setJoinCode] = useState('');
@@ -392,15 +400,9 @@ function Home() {
             onClick={() => navigate(`/insights/${m.id}`)}
           >
             <div>
-              <strong>
-                {new Date(m.startedAt).toLocaleString([], {
-                  day: 'numeric',
-                  month: 'short',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-              </strong>
+              <strong>{m.title || fmtDate(m.startedAt)}</strong>
               <div style={{ opacity: 0.7, fontSize: 13, marginTop: 3 }}>
+                {m.title ? `${fmtDate(m.startedAt)} · ` : ''}
                 {m.wasHost ? 'You hosted' : 'You joined'} · Code {m.roomId}
                 {m.endedAt
                   ? ` · ${fmtDur(new Date(m.endedAt) - new Date(m.startedAt))}`

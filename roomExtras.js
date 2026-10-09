@@ -1,19 +1,31 @@
 // Extra meeting features kept out of server.js so the main file stays small:
 //  - meeting title (host can rename)
 //  - live participant list with names and mic state
+//  - chat (messages and links)
 //  - file sharing (kept in memory until the meeting is empty)
+//  - screen sharing (one person at a time)
 const crypto = require('crypto');
 
 const MAX_FILE = 10 * 1024 * 1024; // 10 MB per file
 const MAX_FILES = 20; // per meeting
 const MAX_TOTAL = 60 * 1024 * 1024; // per meeting
+const MAX_CHAT = 200; // messages kept in memory per meeting
 const ALLOWED = /\.(pdf|docx?|pptx?|xlsx?|txt|csv|png|jpe?g)$/i;
 
-module.exports = function createRoomExtras({ io, roomHosts, Schedule }) {
+module.exports = function createRoomExtras({ io, roomHosts, Schedule, saveChat, saveTitle }) {
   const titles = new Map(); // roomId -> title
   const files = new Map(); // roomId -> [{ id, name, size, fromId, fromName, time, data }]
+  const chats = new Map(); // roomId -> [{ id, fromId, fromName, text, time }]
+  const sharers = new Map(); // roomId -> socket id of the person sharing their screen
 
   const cleanName = (n) => String(n || '').trim().slice(0, 40) || 'Guest';
+  const nameOf = (id) => io.sockets.sockets.get(id)?.data?.name || 'Someone';
+  const roleOf = (roomId, id) => (roomHosts.get(roomId) === id ? 'Host' : 'Participant');
+
+  const setTitle = (roomId, t) => {
+    titles.set(roomId, t);
+    if (saveTitle) saveTitle(roomId, t);
+  };
 
   const meta = (f) => ({
     id: f.id,
@@ -46,14 +58,14 @@ module.exports = function createRoomExtras({ io, roomHosts, Schedule }) {
 
     if (asHost && !titles.has(roomId)) {
       const fallback = `${socket.data.name}'s meeting`;
-      titles.set(roomId, fallback);
+      setTitle(roomId, fallback);
       // a scheduled meeting uses the title the host typed when scheduling it
       Schedule.findOne({ roomId })
         .select('title')
         .lean()
         .then((s) => {
           if (s && s.title && titles.get(roomId) === fallback) {
-            titles.set(roomId, s.title);
+            setTitle(roomId, s.title);
             io.to(roomId).emit('room-title', s.title);
           }
         })
@@ -62,6 +74,8 @@ module.exports = function createRoomExtras({ io, roomHosts, Schedule }) {
 
     socket.emit('room-title', titles.get(roomId) || 'Meeting');
     socket.emit('shared-files', (files.get(roomId) || []).map(meta));
+    socket.emit('chat-history', chats.get(roomId) || []);
+    socket.emit('screen-sharer', sharers.get(roomId) || null);
     broadcastPeople(roomId);
   };
 
@@ -73,7 +87,7 @@ module.exports = function createRoomExtras({ io, roomHosts, Schedule }) {
       if (!roomId || roomHosts.get(roomId) !== socket.id) return;
       const t = String(text || '').trim().slice(0, 80);
       if (!t) return;
-      titles.set(roomId, t);
+      setTitle(roomId, t);
       io.to(roomId).emit('room-title', t);
     });
 
@@ -87,7 +101,68 @@ module.exports = function createRoomExtras({ io, roomHosts, Schedule }) {
       if (socket.data.roomId) broadcastPeople(socket.data.roomId);
     });
 
-    // Anyone in the meeting can share a file
+    // ----- Chat -----
+    socket.on('chat-message', (m, ack) => {
+      const reply = typeof ack === 'function' ? ack : () => {};
+      const roomId = socket.data.roomId;
+      if (!roomId) return reply({ error: 'Join the meeting first' });
+
+      const text = String((m && m.text) || '').trim().slice(0, 1000);
+      if (!text) return reply({ error: 'Type a message first' });
+
+      // at most 10 messages every 10 seconds per person
+      const now = Date.now();
+      const recent = (socket.data.chatTimes || []).filter((t) => now - t < 10000);
+      if (recent.length >= 10) return reply({ error: 'You are sending messages too fast' });
+      recent.push(now);
+      socket.data.chatTimes = recent;
+
+      const entry = {
+        id: crypto.randomUUID(),
+        fromId: socket.id,
+        fromName: socket.data.name || 'Guest',
+        text,
+        time: now,
+      };
+      const list = chats.get(roomId) || [];
+      list.push(entry);
+      if (list.length > MAX_CHAT) list.shift();
+      chats.set(roomId, list);
+
+      io.to(roomId).emit('chat-message', entry);
+      if (saveChat) {
+        saveChat(roomId, {
+          from: socket.id,
+          name: entry.fromName,
+          role: roleOf(roomId, socket.id),
+          kind: 'message',
+          text,
+          time: now,
+        });
+      }
+      reply({ ok: true });
+    });
+
+    // ----- Screen sharing (one person at a time) -----
+    socket.on('screen-state', (state, ack) => {
+      const reply = typeof ack === 'function' ? ack : () => {};
+      const roomId = socket.data.roomId;
+      if (!roomId) return reply({ error: 'Join the meeting first' });
+
+      const current = sharers.get(roomId);
+      if (state && state.on) {
+        if (current && current !== socket.id && io.sockets.sockets.has(current)) {
+          return reply({ error: `${nameOf(current)} is already sharing their screen` });
+        }
+        sharers.set(roomId, socket.id);
+      } else if (current === socket.id) {
+        sharers.delete(roomId);
+      }
+      io.to(roomId).emit('screen-sharer', sharers.get(roomId) || null);
+      reply({ ok: true });
+    });
+
+    // ----- Files: anyone in the meeting can share one -----
     socket.on('share-file', (f, ack) => {
       const reply = typeof ack === 'function' ? ack : () => {};
       const roomId = socket.data.roomId;
@@ -119,6 +194,16 @@ module.exports = function createRoomExtras({ io, roomHosts, Schedule }) {
       list.push(entry);
       files.set(roomId, list);
       io.to(roomId).emit('file-shared', meta(entry));
+      if (saveChat) {
+        saveChat(roomId, {
+          from: socket.id,
+          name: entry.fromName,
+          role: roleOf(roomId, socket.id),
+          kind: 'file',
+          text: name,
+          time: entry.time,
+        });
+      }
       reply({ ok: true });
     });
 
@@ -134,10 +219,18 @@ module.exports = function createRoomExtras({ io, roomHosts, Schedule }) {
     socket.on('disconnect', () => {
       const roomId = socket.data.roomId;
       if (!roomId) return;
+
+      if (sharers.get(roomId) === socket.id) {
+        sharers.delete(roomId);
+        io.to(roomId).emit('screen-sharer', null);
+      }
+
       const remaining = io.sockets.adapter.rooms.get(roomId)?.size || 0;
       if (remaining === 0) {
         titles.delete(roomId);
         files.delete(roomId);
+        chats.delete(roomId);
+        sharers.delete(roomId);
       } else {
         broadcastPeople(roomId);
       }

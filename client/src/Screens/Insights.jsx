@@ -87,7 +87,7 @@ function Insights() {
                 style={{ ...card, cursor: 'pointer' }}
                 onClick={() => navigate(`/insights/${m.id}`)}
               >
-                <strong>{when(m.startedAt)}</strong>
+                <strong>{m.title || when(m.startedAt)}</strong>
                 <div style={{ opacity: 0.7, fontSize: 13, marginTop: 4 }}>
                   {m.wasHost ? 'You hosted' : 'You joined'}
                   {m.endedAt

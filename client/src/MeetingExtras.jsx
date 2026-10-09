@@ -1,5 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { Users, Paperclip, Mic, MicOff, X, Pencil, Download } from 'lucide-react';
+import {
+  Users,
+  Paperclip,
+  Mic,
+  MicOff,
+  X,
+  Pencil,
+  Download,
+  MessageCircle,
+  Send,
+} from 'lucide-react';
 import socket from './socket';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -23,6 +33,30 @@ export function usePeopleNames() {
     return () => socket.off('participants', onPeople);
   }, []);
   return names;
+}
+
+// Turns web addresses in a message into clickable links (http and https only)
+const URL_RE = /(https?:\/\/[^\s<>"']+)/g;
+
+function Linkified({ text }) {
+  const parts = String(text).split(URL_RE);
+  return parts.map((p, i) => {
+    if (i % 2 === 0) return <span key={i}>{p}</span>;
+    const m = p.match(/^(.*?)([.,;:!?)]*)$/); // keep trailing punctuation out of the link
+    return (
+      <span key={i}>
+        <a
+          href={m[1]}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: '#7dd3fc', wordBreak: 'break-all' }}
+        >
+          {m[1]}
+        </a>
+        {m[2]}
+      </span>
+    );
+  });
 }
 
 const ellipsis = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
@@ -63,13 +97,16 @@ function MeetingExtras({ isHost }) {
   const [title, setTitle] = useState('Meeting');
   const [people, setPeople] = useState([]);
   const [files, setFiles] = useState([]);
-  const [panel, setPanel] = useState(null); // null | 'people' | 'files'
+  const [messages, setMessages] = useState([]);
+  const [panel, setPanel] = useState(null); // null | 'people' | 'chat'
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
+  const [text, setText] = useState('');
   const [note, setNote] = useState('');
   const [sending, setSending] = useState(false);
   const [unseen, setUnseen] = useState(0);
   const fileInput = useRef(null);
+  const listRef = useRef(null);
   const panelRef = useRef(null);
   panelRef.current = panel;
 
@@ -77,11 +114,14 @@ function MeetingExtras({ isHost }) {
     const onTitle = (t) => setTitle(t || 'Meeting');
     const onPeople = (list) => setPeople(list || []);
     const onFiles = (list) => setFiles(list || []);
+    const onHistory = (list) => setMessages(list || []);
+    const onMessage = (m) => {
+      setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
+      if (panelRef.current !== 'chat' && m.fromId !== socket.id) setUnseen((n) => n + 1);
+    };
     const onFile = (f) => {
       setFiles((prev) => (prev.some((x) => x.id === f.id) ? prev : [...prev, f]));
-      if (panelRef.current !== 'files' && f.fromId !== socket.id) {
-        setUnseen((n) => n + 1);
-      }
+      if (panelRef.current !== 'chat' && f.fromId !== socket.id) setUnseen((n) => n + 1);
     };
     const onFull = () => {
       alert('This meeting is full.');
@@ -92,19 +132,36 @@ function MeetingExtras({ isHost }) {
     socket.on('participants', onPeople);
     socket.on('shared-files', onFiles);
     socket.on('file-shared', onFile);
+    socket.on('chat-history', onHistory);
+    socket.on('chat-message', onMessage);
     socket.on('room-full', onFull);
     return () => {
       socket.off('room-title', onTitle);
       socket.off('participants', onPeople);
       socket.off('shared-files', onFiles);
       socket.off('file-shared', onFile);
+      socket.off('chat-history', onHistory);
+      socket.off('chat-message', onMessage);
       socket.off('room-full', onFull);
     };
   }, []);
 
+  // Messages and files together, oldest first
+  const timeline = [
+    ...messages.map((m) => ({ ...m, type: 'msg' })),
+    ...files.map((f) => ({ ...f, type: 'file' })),
+  ].sort((a, b) => a.time - b.time);
+
+  // Keep the newest message in view
+  useEffect(() => {
+    if (panel === 'chat' && listRef.current) {
+      listRef.current.scrollTop = listRef.current.scrollHeight;
+    }
+  }, [timeline.length, panel]);
+
   const open = (name) => {
     setPanel((p) => (p === name ? null : name));
-    if (name === 'files') setUnseen(0);
+    if (name === 'chat') setUnseen(0);
   };
 
   const startEdit = () => {
@@ -116,6 +173,17 @@ function MeetingExtras({ isHost }) {
     const t = draft.trim();
     if (t && t !== title) socket.emit('set-title', t);
     setEditing(false);
+  };
+
+  const sendText = (e) => {
+    e.preventDefault();
+    const t = text.trim();
+    if (!t) return;
+    setNote('');
+    socket.emit('chat-message', { text: t }, (res) => {
+      if (res && res.error) setNote(res.error);
+    });
+    setText('');
   };
 
   const handlePick = async (e) => {
@@ -214,8 +282,8 @@ function MeetingExtras({ isHost }) {
           <button style={chip(panel === 'people')} onClick={() => open('people')}>
             <Users size={16} /> {people.length}
           </button>
-          <button style={chip(panel === 'files')} onClick={() => open('files')}>
-            <Paperclip size={16} /> Files
+          <button style={chip(panel === 'chat')} onClick={() => open('chat')}>
+            <MessageCircle size={16} /> Chat
             {unseen > 0 && (
               <span
                 style={{
@@ -239,7 +307,7 @@ function MeetingExtras({ isHost }) {
             top: 0,
             right: 0,
             bottom: 0,
-            width: 'min(340px, 100%)',
+            width: 'min(360px, 100%)',
             background: '#12151f',
             color: '#f1f5f9',
             borderLeft: '1px solid rgba(255,255,255,0.1)',
@@ -249,17 +317,16 @@ function MeetingExtras({ isHost }) {
           }}
         >
           <div style={{ ...row, justifyContent: 'space-between' }}>
-            <strong>
-              {panel === 'people' ? `Participants (${people.length})` : 'Shared files'}
-            </strong>
+            <strong>{panel === 'people' ? `Participants (${people.length})` : 'Chat'}</strong>
             <button style={iconBtn} onClick={() => setPanel(null)} title="Close">
               <X size={18} />
             </button>
           </div>
 
-          <div style={{ flex: 1, overflowY: 'auto' }}>
-            {panel === 'people' &&
-              people.map((p) => (
+          {/* PEOPLE */}
+          {panel === 'people' && (
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              {people.map((p) => (
                 <div key={p.id} style={row}>
                   <div
                     style={{
@@ -286,57 +353,121 @@ function MeetingExtras({ isHost }) {
                   {p.micOn ? <Mic size={16} /> : <MicOff size={16} color="#f87171" />}
                 </div>
               ))}
+            </div>
+          )}
 
-            {panel === 'files' && (
-              <>
-                <div style={{ padding: 14 }}>
-                  <input
-                    ref={fileInput}
-                    type="file"
-                    hidden
-                    accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.csv,.png,.jpg,.jpeg"
-                    onChange={handlePick}
-                  />
-                  <button
-                    className="join-go"
-                    style={{ width: '100%' }}
-                    disabled={sending}
-                    onClick={() => fileInput.current && fileInput.current.click()}
-                  >
-                    {sending ? 'Sending...' : 'Share a file'}
-                  </button>
-                  <p style={{ fontSize: 12, opacity: 0.6, margin: '8px 0 0' }}>
-                    PDF, Word, PowerPoint, Excel, TXT, CSV, PNG or JPG, up to 10 MB.
-                    Everyone in this meeting can download it.
-                  </p>
-                  {note && (
-                    <p style={{ color: '#f87171', fontSize: 13, margin: '8px 0 0' }}>{note}</p>
-                  )}
-                </div>
-                {files.length === 0 && (
-                  <p style={{ padding: '0 14px', opacity: 0.6, fontSize: 14 }}>
-                    No files shared yet.
+          {/* CHAT */}
+          {panel === 'chat' && (
+            <>
+              <div ref={listRef} style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+                {timeline.length === 0 && (
+                  <p style={{ padding: '10px 14px', opacity: 0.6, fontSize: 14 }}>
+                    No messages yet. Say hello, paste a link, or share a file.
                   </p>
                 )}
-                {files.map((f) => (
-                  <div key={f.id} style={row}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={ellipsis} title={f.name}>
-                        {f.name}
-                      </div>
-                      <div style={{ fontSize: 12, opacity: 0.6 }}>
-                        {f.fromId === socket.id ? 'You' : f.fromName} · {fmtSize(f.size)} ·{' '}
-                        {fmtTime(f.time)}
+                {timeline.map((m) => {
+                  const mine = m.fromId === socket.id;
+                  return (
+                    <div
+                      key={`${m.type}-${m.id}`}
+                      style={{
+                        display: 'flex',
+                        justifyContent: mine ? 'flex-end' : 'flex-start',
+                        padding: '4px 12px',
+                      }}
+                    >
+                      <div
+                        style={{
+                          maxWidth: '85%',
+                          background: mine ? '#6c5ce7' : 'rgba(255,255,255,0.08)',
+                          borderRadius: 12,
+                          padding: '8px 12px',
+                        }}
+                      >
+                        <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 3 }}>
+                          {mine ? 'You' : m.fromName} · {fmtTime(m.time)}
+                        </div>
+                        {m.type === 'msg' ? (
+                          <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                            <Linkified text={m.text} />
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <Paperclip size={16} style={{ flexShrink: 0 }} />
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ wordBreak: 'break-word' }}>{m.name}</div>
+                              <div style={{ fontSize: 12, opacity: 0.7 }}>{fmtSize(m.size)}</div>
+                            </div>
+                            <button
+                              style={iconBtn}
+                              onClick={() => handleDownload(m)}
+                              title="Download"
+                            >
+                              <Download size={18} />
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
-                    <button style={iconBtn} onClick={() => handleDownload(f)} title="Download">
-                      <Download size={18} />
-                    </button>
-                  </div>
-                ))}
-              </>
-            )}
-          </div>
+                  );
+                })}
+              </div>
+
+              {note && (
+                <p style={{ color: '#f87171', fontSize: 13, margin: '0 14px 6px' }}>{note}</p>
+              )}
+              <p style={{ fontSize: 11, opacity: 0.5, margin: '0 14px 6px' }}>
+                Files: PDF, Word, PowerPoint, Excel, TXT, CSV, PNG or JPG, up to 10 MB.
+              </p>
+
+              <form
+                onSubmit={sendText}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '10px 12px',
+                  borderTop: '1px solid rgba(255,255,255,0.08)',
+                }}
+              >
+                <input
+                  ref={fileInput}
+                  type="file"
+                  hidden
+                  accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.csv,.png,.jpg,.jpeg"
+                  onChange={handlePick}
+                />
+                <button
+                  type="button"
+                  style={iconBtn}
+                  disabled={sending}
+                  onClick={() => fileInput.current && fileInput.current.click()}
+                  title="Share a file"
+                >
+                  <Paperclip size={20} />
+                </button>
+                <input
+                  value={text}
+                  maxLength={1000}
+                  placeholder={sending ? 'Sending file...' : 'Type a message'}
+                  onChange={(e) => setText(e.target.value)}
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    background: 'rgba(255,255,255,0.08)',
+                    border: '1px solid rgba(255,255,255,0.15)',
+                    borderRadius: 999,
+                    color: 'inherit',
+                    padding: '8px 14px',
+                    fontSize: 14,
+                  }}
+                />
+                <button type="submit" style={iconBtn} title="Send">
+                  <Send size={20} />
+                </button>
+              </form>
+            </>
+          )}
         </div>
       )}
     </>

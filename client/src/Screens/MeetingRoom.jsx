@@ -10,7 +10,8 @@ import {
   Check,
   X,
   Hand,
-  MessageSquare,
+  ScreenShare,
+  ScreenShareOff,
 } from 'lucide-react';
 import socket from '../socket';
 import { startSpeechRecognition } from '../speechRecognizer';
@@ -43,6 +44,7 @@ const ICE_SERVERS = {
     },
   ],
 };
+
 const myName = () => {
   try {
     return JSON.parse(localStorage.getItem('user'))?.name || 'Guest';
@@ -60,6 +62,7 @@ function MeetingRoom() {
   const localVideoRef = useRef(null);
   const streamRef = useRef(null);
   const leavingRef = useRef(false);
+  const screenTrackRef = useRef(null); // the screen-share video track while sharing
 
   // One RTCPeerConnection per other participant, keyed by their socket id
   const peerConnectionsRef = useRef({});
@@ -69,6 +72,7 @@ function MeetingRoom() {
   const [camReady, setCamReady] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [inviteCopied, setInviteCopied] = useState(false);
   const [needsUnmute, setNeedsUnmute] = useState(false);
   const [hostEndedPopup, setHostEndedPopup] = useState(false);
   const [roomNotFound, setRoomNotFound] = useState(false);
@@ -80,6 +84,20 @@ function MeetingRoom() {
   // peers: { [socketId]: MediaStream }
   const [peers, setPeers] = useState({});
   const names = usePeopleNames();
+
+  // ===== Meeting name (the host can set it when starting) =====
+  const [meetingName, setMeetingName] = useState('');
+  const nameTouched = useRef(false);
+  const pendingTitleRef = useRef('');
+
+  // ===== Screen sharing =====
+  const [sharing, setSharing] = useState(false);
+  const [sharerId, setSharerId] = useState(null); // socket id of whoever is sharing
+  const [shareNote, setShareNote] = useState('');
+  // phones cannot share their screen, so the button is hidden there
+  const canShare =
+    typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia;
+
   // ===== Accessibility preferences (saved on the user's account) =====
   const [prefs, setPrefs] = useState(getCachedSettings());
   const prefsRef = useRef(prefs);
@@ -120,12 +138,22 @@ function MeetingRoom() {
     speechTimerRef.current = setTimeout(() => setSpeechCaption(null), 4000);
   };
 
-    const labelFor = (id) => {
+  const labelFor = (id) => {
     if (id === 'me') return 'You';
     return names[id] || (id === hostId ? 'Host' : 'Participant');
   };
 
   const stopMedia = () => {
+    try {
+      if (screenTrackRef.current) {
+        screenTrackRef.current.onended = null;
+        screenTrackRef.current.stop();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+    screenTrackRef.current = null;
+
     try {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
@@ -169,8 +197,13 @@ function MeetingRoom() {
       }
       const pc = new RTCPeerConnection(ICE_SERVERS);
 
+      // a person who joins while I am sharing gets my screen instead of my camera
       streamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, streamRef.current);
+        const useScreen =
+          track.kind === 'video' &&
+          screenTrackRef.current &&
+          screenTrackRef.current.readyState === 'live';
+        pc.addTrack(useScreen ? screenTrackRef.current : track, streamRef.current);
       });
 
       pc.onicecandidate = (event) => {
@@ -301,6 +334,21 @@ function MeetingRoom() {
 
     const onHostId = (id) => {
       setHostId(id);
+      // the host typed a name before the connection was ready: send it now
+      if (pendingTitleRef.current) {
+        socket.emit('set-title', pendingTitleRef.current);
+        pendingTitleRef.current = '';
+      }
+    };
+
+    // The meeting name changed (also fills the name box in the host's start popup)
+    const onRoomTitle = (t) => {
+      if (!nameTouched.current) setMeetingName(t || '');
+    };
+
+    // Who is sharing their screen right now (or null)
+    const onScreenSharer = (id) => {
+      setSharerId(id || null);
     };
 
     // A caption arrived from another participant who is signing.
@@ -329,6 +377,8 @@ function MeetingRoom() {
     socket.on('host-ended', onHostEnded);
     socket.on('host-left', onHostLeft);
     socket.on('host-id', onHostId);
+    socket.on('room-title', onRoomTitle);
+    socket.on('screen-sharer', onScreenSharer);
     socket.on('sign-caption', onSignCaption);
     socket.on('speech-caption', onSpeechCaption);
 
@@ -381,6 +431,8 @@ function MeetingRoom() {
       socket.off('host-ended', onHostEnded);
       socket.off('host-left', onHostLeft);
       socket.off('host-id', onHostId);
+      socket.off('room-title', onRoomTitle);
+      socket.off('screen-sharer', onScreenSharer);
       socket.off('sign-caption', onSignCaption);
       socket.off('speech-caption', onSpeechCaption);
       socket.disconnect();
@@ -434,6 +486,7 @@ function MeetingRoom() {
       disposeSignRecognition();
     };
   }, []);
+
   // Silently listen to my voice. Finished sentences are saved for the summary,
   // and the words are streamed live to people who turned captions on.
   useEffect(() => {
@@ -456,7 +509,6 @@ function MeetingRoom() {
     });
     return stop;
   }, [speechOn, micOn, waiting]);
-  
 
   // Measure how long I actually make sound (works with the camera off)
   useEffect(() => {
@@ -506,7 +558,8 @@ function MeetingRoom() {
     };
   }, []);
 
-  // Start / stop sign recognition when the hand button is toggled
+  // Start / stop sign recognition when the hand button is toggled.
+  // It always reads the camera, so signing keeps working while sharing a screen.
   useEffect(() => {
     if (!signOn) {
       setCaption(null);
@@ -576,8 +629,74 @@ function MeetingRoom() {
     socket.emit('caption-pref', { on: next });
   };
 
-  // Leave and go home. Speech and sign recognition stop first, so the
-  // last sentence is sent; the connection closes a moment later.
+  // ----- Screen sharing -----
+  // Swap the picture sent to everyone, without reconnecting
+  const swapVideo = async (track) => {
+    await Promise.all(
+      Object.values(peerConnectionsRef.current).map((pc) => {
+        const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+        return sender ? sender.replaceTrack(track).catch(() => {}) : null;
+      })
+    );
+  };
+
+  const stopShare = async () => {
+    const screen = screenTrackRef.current;
+    if (!screen) return;
+    screenTrackRef.current = null;
+    screen.onended = null;
+    try {
+      screen.stop();
+    } catch (err) {
+      console.error(err);
+    }
+    const cam = streamRef.current?.getVideoTracks()[0];
+    if (cam) await swapVideo(cam);
+    socket.emit('screen-state', { on: false });
+    setSharing(false);
+  };
+
+  const startShare = async () => {
+    setShareNote('');
+    if (!canShare || sharing || !streamRef.current) return;
+
+    let display;
+    try {
+      display = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: 15 }, width: { max: 1920 }, height: { max: 1080 } },
+        audio: false,
+      });
+    } catch (err) {
+      // pressing Cancel in the browser's picker is not an error
+      if (err.name !== 'NotAllowedError') setShareNote('Could not start screen sharing.');
+      return;
+    }
+
+    const track = display.getVideoTracks()[0];
+    if (!track) return;
+    try {
+      track.contentHint = 'detail'; // keeps text sharp
+    } catch (err) {
+      // not supported everywhere
+    }
+
+    // the server allows one sharer at a time
+    socket.emit('screen-state', { on: true }, async (res) => {
+      if (res && res.error) {
+        track.stop();
+        setShareNote(res.error);
+        return;
+      }
+      screenTrackRef.current = track;
+      await swapVideo(track);
+      // the browser's own "Stop sharing" button ends the track
+      track.onended = () => stopShare();
+      setSharing(true);
+    });
+  };
+
+  // Go home. Speech and sign recognition stop first, so the last sentence
+  // is sent; the connection closes a moment later.
   const finishLeave = () => {
     if (leavingRef.current) return;
     leavingRef.current = true;
@@ -617,6 +736,28 @@ function MeetingRoom() {
     navigator.clipboard.writeText(roomId);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  // Name + code + link, ready to paste into a message
+  const handleCopyInvite = () => {
+    const text =
+      `${meetingName.trim() || 'Meeting'}\n` +
+      `Meeting code: ${roomId}\n` +
+      `Join: ${window.location.origin}/meeting/${roomId}\n` +
+      `(Log in to ConnectSphere first.)`;
+    navigator.clipboard.writeText(text);
+    setInviteCopied(true);
+    setTimeout(() => setInviteCopied(false), 2000);
+  };
+
+  // Host presses "Start meeting" in the start popup
+  const handleStartMeeting = () => {
+    const t = meetingName.trim();
+    if (t) {
+      if (hostId) socket.emit('set-title', t);
+      else pendingTitleRef.current = t; // sent as soon as the connection is ready
+    }
+    setShowStartPopup(false);
   };
 
   // Actually unmute the other people's videos (needed after autoplay was blocked)
@@ -704,6 +845,31 @@ function MeetingRoom() {
       <MeetingExtras isHost={isHost} />
       {error && <p className="v3-error room-error">{error}</p>}
 
+      {sharing && (
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            gap: 12,
+            flexWrap: 'wrap',
+            padding: '8px 16px',
+            margin: '8px 16px 0',
+            background: 'rgba(22,163,74,0.2)',
+            border: '1px solid rgba(22,163,74,0.5)',
+            color: '#bbf7d0',
+            fontSize: 13,
+            borderRadius: 10,
+          }}
+        >
+          <span>You are sharing your screen with everyone.</span>
+          <button className="join-go" onClick={stopShare}>
+            Stop sharing
+          </button>
+        </div>
+      )}
+      {shareNote && <p className="v3-error room-error">{shareNote}</p>}
+
       {hostLeftBanner && (
         <div className="host-left-banner">
           <span>The host has left the meeting. You can keep talking with others here.</span>
@@ -714,25 +880,29 @@ function MeetingRoom() {
       )}
 
       <p style={{ textAlign: 'center', fontSize: 12, opacity: 0.6, margin: '4px 0' }}>
-        This meeting is being transcribed to create a summary.
+        This meeting is being transcribed. Chat messages are saved with it.
       </p>
 
       <div className="room-video-grid">
         <div className="video-tile">
           <video ref={localVideoRef} autoPlay playsInline muted />
-          <div className="video-label">{isHost ? 'You (Host)' : 'You'}</div>
+          <div className="video-label">
+            {isHost ? 'You (Host)' : 'You'}
+            {sharing ? ' · sharing screen' : ''}
+          </div>
         </div>
 
         {peerIds.map((id) => (
           <RemoteVideo
             key={id}
             stream={peers[id]}
+            isSharing={sharerId === id}
             label={
-              names[id]
+              (names[id]
                 ? names[id] + (id === hostId ? ' (Host)' : '')
                 : id === hostId
                 ? 'Host'
-                : 'Participant'
+                : 'Participant') + (sharerId === id ? ' · screen' : '')
             }
             onNeedsUnmute={() => setNeedsUnmute(true)}
           />
@@ -783,22 +953,34 @@ function MeetingRoom() {
         <button
           className={`control-btn ${!micOn ? 'off' : ''}`}
           onClick={toggleMic}
+          title={micOn ? 'Mute' : 'Unmute'}
         >
           {micOn ? <Mic size={20} /> : <MicOff size={20} />}
         </button>
         <button
           className={`control-btn ${!camOn ? 'off' : ''}`}
           onClick={toggleCam}
+          title={camOn ? 'Turn camera off' : 'Turn camera on'}
         >
           {camOn ? <Video size={20} /> : <VideoOff size={20} />}
         </button>
+        {canShare && (
+          <button
+            className="control-btn"
+            style={sharing ? { background: '#16a34a' } : undefined}
+            onClick={sharing ? stopShare : startShare}
+            title={sharing ? 'Stop sharing' : 'Share your screen'}
+          >
+            {sharing ? <ScreenShareOff size={20} /> : <ScreenShare size={20} />}
+          </button>
+        )}
         <button
           className="control-btn"
           style={captionsOn ? { background: '#6c5ce7' } : undefined}
           onClick={toggleCaptions}
           title="Live captions for spoken English"
         >
-          <MessageSquare size={20} />
+          <span style={{ fontWeight: 700, fontSize: 13 }}>CC</span>
         </button>
         <button
           className="control-btn"
@@ -824,16 +1006,34 @@ function MeetingRoom() {
               <div className="v3-logo" style={{ fontSize: 32 }}>
                 Connect<span>Sphere</span>
               </div>
-              <p className="code-modal-text">Share this code to invite others</p>
+              <p className="code-modal-text">Name your meeting, then share the code</p>
+              <input
+                className="v3-input"
+                style={{ width: '100%' }}
+                placeholder="Meeting name"
+                value={meetingName}
+                maxLength={80}
+                onChange={(e) => {
+                  nameTouched.current = true;
+                  setMeetingName(e.target.value);
+                }}
+              />
               <div className="code-display">
                 <span>{roomId}</span>
                 <button onClick={handleCopyCode} className="code-copy-btn">
                   {copied ? <Check size={16} /> : <Copy size={16} />}
-                  {copied ? 'Copied' : 'Copy'}
+                  {copied ? 'Copied' : 'Copy code'}
                 </button>
               </div>
-              <button className="v3-btn" onClick={() => setShowStartPopup(false)}>
-                OK, Got It
+              <button
+                className="v3-btn"
+                style={{ width: '100%', marginBottom: 10 }}
+                onClick={handleCopyInvite}
+              >
+                {inviteCopied ? 'Invite copied' : 'Copy invite (name + code + link)'}
+              </button>
+              <button className="v3-btn" style={{ width: '100%' }} onClick={handleStartMeeting}>
+                Start meeting
               </button>
             </div>
           </div>
@@ -908,7 +1108,8 @@ function MeetingRoom() {
 
 // A small dedicated component per remote participant, so each one
 // gets its own <video> element and its own play()/unmute handling.
-function RemoteVideo({ stream, label, onNeedsUnmute }) {
+// When that person is sharing their screen the tile is wide and not mirrored.
+function RemoteVideo({ stream, label, isSharing, onNeedsUnmute }) {
   const videoRef = useRef(null);
 
   useEffect(() => {
@@ -923,9 +1124,28 @@ function RemoteVideo({ stream, label, onNeedsUnmute }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stream]);
 
+  const tileStyle = isSharing
+    ? {
+        gridColumn: '1 / -1',
+        width: '100%',
+        maxWidth: 960,
+        justifySelf: 'center',
+      }
+    : undefined;
+
+  const videoStyle = isSharing
+    ? { transform: 'none', objectFit: 'contain', background: '#000' }
+    : undefined;
+
   return (
-    <div className="video-tile">
-      <video ref={videoRef} className="remote-video" autoPlay playsInline />
+    <div className="video-tile" style={tileStyle}>
+      <video
+        ref={videoRef}
+        className="remote-video"
+        style={videoStyle}
+        autoPlay
+        playsInline
+      />
       <div className="video-label">{label}</div>
     </div>
   );

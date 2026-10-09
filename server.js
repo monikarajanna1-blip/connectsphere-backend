@@ -12,6 +12,7 @@ const Schedule = require('./models/Schedule');
 const User = require('./models/User');
 const { buildSummary } = require('./summary');
 const createRoomExtras = require('./roomExtras');
+
 const app = express();
 const server = http.createServer(app);
 
@@ -51,9 +52,32 @@ const roomMeetings = new Map(); // roomId -> Meeting _id in MongoDB
 const roomStats = new Map(); // roomId -> Map(socketId -> engagement stats)
 
 const waitRoom = (roomId) => `wait:${roomId}`; // guests waiting for the host
-const MAX_PARTICIPANTS = 6; // video gets heavy for everyone beyond this
-const extras = createRoomExtras({ io, roomHosts, Schedule });
 const captionRoom = (roomId) => `captions:${roomId}`; // people who want live captions
+const MAX_PARTICIPANTS = 6; // video gets heavy for everyone beyond this
+
+// Run something on this room's meeting record once it exists
+// (the record is created a moment after the host joins)
+const withMeeting = (roomId, fn, attempt = 0) => {
+  const id = roomMeetings.get(roomId);
+  if (id) return fn(id);
+  if (attempt < 6) setTimeout(() => withMeeting(roomId, fn, attempt + 1), 700);
+};
+
+const saveChat = (roomId, entry) =>
+  withMeeting(roomId, (id) =>
+    Meeting.updateOne({ _id: id }, { $push: { chat: entry } }).catch((err) =>
+      console.error('Saving chat failed:', err.message)
+    )
+  );
+
+const saveTitle = (roomId, title) =>
+  withMeeting(roomId, (id) =>
+    Meeting.updateOne({ _id: id }, { title }).catch((err) =>
+      console.error('Saving title failed:', err.message)
+    )
+  );
+
+const extras = createRoomExtras({ io, roomHosts, Schedule, saveChat, saveTitle });
 
 // A scheduled meeting counts as open from creation until 2 hours after its start time
 const findOpenSchedule = (roomId) =>
@@ -190,12 +214,14 @@ io.on('connection', (socket) => {
         .catch(() => socket.emit('room-not-found'));
       return;
     }
+
     // keep the call small enough for everyone's connection
     const members = io.sockets.adapter.rooms.get(roomId);
     if (members && members.size >= MAX_PARTICIPANTS && !members.has(socket.id)) {
       socket.emit('room-full');
       return;
     }
+
     socket.leave(waitRoom(roomId));
     socket.data.roomId = roomId;
     socket.join(roomId);
@@ -344,7 +370,8 @@ io.on('connection', (socket) => {
       socket.to(captionRoom(roomId)).emit('speech-caption', { from: socket.id, text: clean });
     }
   });
-    // Words that are still being spoken: shown live to people who want captions,
+
+  // Words that are still being spoken: shown live to people who want captions,
   // but not saved (the finished sentence is saved by 'transcript-line')
   socket.on('speech-interim', ({ text }) => {
     const roomId = socket.data.roomId;
@@ -376,8 +403,11 @@ io.on('connection', (socket) => {
       if (st) st.speakingMs += 2000;
     }
     if (final && text) addTranscript(roomId, socket.id, 'sign', text);
-    extras.listen(socket);
   });
+
+  // Chat, file sharing, screen sharing, meeting name, people list.
+  // This must run once per connection, so it lives here and not inside a handler.
+  extras.listen(socket);
 });
 
 // ===== MEETING REPORTS =====
@@ -393,6 +423,7 @@ const reportFor = (m) => {
   return {
     id: String(m._id),
     roomId: m.roomId,
+    title: m.title || '',
     startedAt: m.startedAt,
     endedAt: m.endedAt || null,
     ...buildSummary(m.lines || [], m.startedAt, m.endedAt, stats, now),
@@ -405,12 +436,13 @@ app.get('/api/my-meetings', requireAuth, async (req, res) => {
     const list = await Meeting.find({ memberIds: req.userId })
       .sort({ startedAt: -1 })
       .limit(30)
-      .select('roomId startedAt endedAt hostId')
+      .select('roomId title startedAt endedAt hostId')
       .lean();
     res.json({
       meetings: list.map((m) => ({
         id: String(m._id),
         roomId: m.roomId,
+        title: m.title || '',
         startedAt: m.startedAt,
         endedAt: m.endedAt || null,
         wasHost: String(m.hostId || '') === req.userId,
@@ -487,7 +519,11 @@ app.put('/api/settings', requireAuth, async (req, res) => {
 app.get('/api/schedules', requireAuth, async (req, res) => {
   try {
     const since = new Date(Date.now() - 2 * 60 * 60 * 1000);
-    const list = await Schedule.find({ hostId: req.userId,endedAt: { $exists: false }, startsAt: { $gte: since } })
+    const list = await Schedule.find({
+      hostId: req.userId,
+      endedAt: { $exists: false },
+      startsAt: { $gte: since },
+    })
       .sort({ startsAt: 1 })
       .limit(30)
       .lean();
