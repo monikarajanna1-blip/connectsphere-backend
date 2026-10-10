@@ -60,6 +60,7 @@ function MeetingRoom() {
   const isHost = location.state?.isHost || false;
 
   const localVideoRef = useRef(null);
+  const screenPreviewRef = useRef(null); // shows me what I am sharing
   const streamRef = useRef(null);
   const leavingRef = useRef(false);
   const screenTrackRef = useRef(null); // the screen-share video track while sharing
@@ -440,6 +441,18 @@ function MeetingRoom() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
+
+  // Show me my own shared screen, so I can see what everyone else sees
+  useEffect(() => {
+    const el = screenPreviewRef.current;
+    if (!el) return;
+    if (sharing && screenTrackRef.current) {
+      el.srcObject = new MediaStream([screenTrackRef.current]);
+      el.play().catch(() => {});
+    } else {
+      el.srcObject = null;
+    }
+  }, [sharing]);
 
   // Load this user's saved accessibility settings
   useEffect(() => {
@@ -862,7 +875,10 @@ function MeetingRoom() {
             borderRadius: 10,
           }}
         >
-          <span>You are sharing your screen with everyone.</span>
+          <span>
+            You are sharing your screen. Everyone in the meeting sees what is in the
+            large tile below.
+          </span>
           <button className="join-go" onClick={stopShare}>
             Stop sharing
           </button>
@@ -884,11 +900,35 @@ function MeetingRoom() {
       </p>
 
       <div className="room-video-grid">
+        {/* What I am sharing: exactly what everyone else sees */}
+        {sharing && (
+          <div
+            className="video-tile"
+            style={{
+              gridColumn: '1 / -1',
+              width: '100%',
+              maxWidth: 960,
+              justifySelf: 'center',
+            }}
+          >
+            <video
+              ref={screenPreviewRef}
+              autoPlay
+              playsInline
+              muted
+              style={{ transform: 'none', objectFit: 'contain', background: '#000' }}
+            />
+            <div className="video-label">
+              Your shared screen (this is what everyone sees)
+            </div>
+          </div>
+        )}
+
         <div className="video-tile">
           <video ref={localVideoRef} autoPlay playsInline muted />
           <div className="video-label">
             {isHost ? 'You (Host)' : 'You'}
-            {sharing ? ' · sharing screen' : ''}
+            {sharing ? ' · camera' : ''}
           </div>
         </div>
 
