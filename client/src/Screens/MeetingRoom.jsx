@@ -23,6 +23,7 @@ import {
 import { getCachedSettings, fetchSettings, captionStyle } from '../accessibility';
 import '../App.css';
 import MeetingExtras, { usePeopleNames } from '../MeetingExtras';
+import ScreenPreview from '../ScreenPreview';
 
 const ICE_SERVERS = {
   iceServers: [
@@ -925,6 +926,7 @@ function MeetingRoom() {
             <span style={{ opacity: 0.7, fontSize: 14, maxWidth: 420 }}>
               Everyone in the meeting can see your window. Your camera is not shown.
             </span>
+            <ScreenPreview track={screenTrackRef.current} />
             <button className="v3-btn" style={{ width: 220 }} onClick={stopShare}>
               Stop sharing
             </button>
