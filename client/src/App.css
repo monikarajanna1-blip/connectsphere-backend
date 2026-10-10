@@ -747,3 +747,8 @@
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 12px;
 }
+
+.room-video-grid {
+  align-content: start;
+  grid-auto-rows: max-content;
+}

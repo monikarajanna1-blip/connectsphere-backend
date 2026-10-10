@@ -53,6 +53,17 @@ const myName = () => {
   }
 };
 
+// A tile that is still playing (so the sound and sign recognition keep working)
+// but is not visible
+const HIDDEN_TILE = {
+  position: 'absolute',
+  width: 2,
+  height: 2,
+  overflow: 'hidden',
+  opacity: 0,
+  pointerEvents: 'none',
+};
+
 function MeetingRoom() {
   const { roomId } = useParams();
   const navigate = useNavigate();
@@ -60,7 +71,6 @@ function MeetingRoom() {
   const isHost = location.state?.isHost || false;
 
   const localVideoRef = useRef(null);
-  const screenPreviewRef = useRef(null); // shows me what I am sharing
   const streamRef = useRef(null);
   const leavingRef = useRef(false);
   const screenTrackRef = useRef(null); // the screen-share video track while sharing
@@ -95,6 +105,7 @@ function MeetingRoom() {
   const [sharing, setSharing] = useState(false);
   const [sharerId, setSharerId] = useState(null); // socket id of whoever is sharing
   const [shareNote, setShareNote] = useState('');
+  const [showPeople, setShowPeople] = useState(false); // bring the faces back during a share
   // phones cannot share their screen, so the button is hidden there
   const canShare =
     typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia;
@@ -350,6 +361,7 @@ function MeetingRoom() {
     // Who is sharing their screen right now (or null)
     const onScreenSharer = (id) => {
       setSharerId(id || null);
+      if (!id) setShowPeople(false); // a new share starts with the screen only
     };
 
     // A caption arrived from another participant who is signing.
@@ -441,18 +453,6 @@ function MeetingRoom() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
-
-  // Show me my own shared screen, so I can see what everyone else sees
-  useEffect(() => {
-    const el = screenPreviewRef.current;
-    if (!el) return;
-    if (sharing && screenTrackRef.current) {
-      el.srcObject = new MediaStream([screenTrackRef.current]);
-      el.play().catch(() => {});
-    } else {
-      el.srcObject = null;
-    }
-  }, [sharing]);
 
   // Load this user's saved accessibility settings
   useEffect(() => {
@@ -667,6 +667,7 @@ function MeetingRoom() {
     if (cam) await swapVideo(cam);
     socket.emit('screen-state', { on: false });
     setSharing(false);
+    setShowPeople(false);
   };
 
   const startShare = async () => {
@@ -704,6 +705,7 @@ function MeetingRoom() {
       await swapVideo(track);
       // the browser's own "Stop sharing" button ends the track
       track.onended = () => stopShare();
+      setShowPeople(false);
       setSharing(true);
     });
   };
@@ -820,6 +822,10 @@ function MeetingRoom() {
   const peerIds = Object.keys(peers);
   const othersRemain = peerIds.filter((id) => id !== hostId).length > 0;
 
+  // Zoom style: while someone shares, show only the shared screen
+  const someoneSharing = sharing || !!sharerId;
+  const compact = someoneSharing && !showPeople;
+
   // Text under "Waiting for the host": scheduled time and a live countdown
   const waitText = (() => {
     if (!waiting?.startsAt) return '';
@@ -857,8 +863,9 @@ function MeetingRoom() {
       </div>
       <MeetingExtras isHost={isHost} />
       {error && <p className="v3-error room-error">{error}</p>}
+      {shareNote && <p className="v3-error room-error">{shareNote}</p>}
 
-      {sharing && (
+      {someoneSharing && (
         <div
           style={{
             display: 'flex',
@@ -866,25 +873,21 @@ function MeetingRoom() {
             alignItems: 'center',
             gap: 12,
             flexWrap: 'wrap',
-            padding: '8px 16px',
-            margin: '8px 16px 0',
-            background: 'rgba(22,163,74,0.2)',
-            border: '1px solid rgba(22,163,74,0.5)',
-            color: '#bbf7d0',
+            padding: '6px 16px',
+            color: '#f1f5f9',
             fontSize: 13,
-            borderRadius: 10,
           }}
         >
-          <span>
-            You are sharing your screen. Everyone in the meeting sees what is in the
-            large tile below.
+          <span style={{ opacity: 0.85 }}>
+            {sharing
+              ? 'You are sharing your screen.'
+              : `${labelFor(sharerId)} is sharing their screen.`}
           </span>
-          <button className="join-go" onClick={stopShare}>
-            Stop sharing
+          <button className="join-go" onClick={() => setShowPeople((v) => !v)}>
+            {showPeople ? 'Hide people' : 'Show people'}
           </button>
         </div>
       )}
-      {shareNote && <p className="v3-error room-error">{shareNote}</p>}
 
       {hostLeftBanner && (
         <div className="host-left-banner">
@@ -895,41 +898,43 @@ function MeetingRoom() {
         </div>
       )}
 
-      <p style={{ textAlign: 'center', fontSize: 12, opacity: 0.6, margin: '4px 0' }}>
-        This meeting is being transcribed. Chat messages are saved with it.
-      </p>
+      {!someoneSharing && (
+        <p style={{ textAlign: 'center', fontSize: 12, opacity: 0.6, margin: '4px 0' }}>
+          This meeting is being transcribed. Chat messages are saved with it.
+        </p>
+      )}
 
       <div className="room-video-grid">
-        {/* What I am sharing: exactly what everyone else sees */}
-        {sharing && (
+        {/* The person sharing sees this instead of a preview of themselves */}
+        {sharing && !showPeople && (
           <div
-            className="video-tile"
             style={{
               gridColumn: '1 / -1',
-              width: '100%',
-              maxWidth: 960,
-              justifySelf: 'center',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 12,
+              padding: 40,
+              textAlign: 'center',
+              color: '#f1f5f9',
             }}
           >
-            <video
-              ref={screenPreviewRef}
-              autoPlay
-              playsInline
-              muted
-              style={{ transform: 'none', objectFit: 'contain', background: '#000' }}
-            />
-            <div className="video-label">
-              Your shared screen (this is what everyone sees)
-            </div>
+            <ScreenShare size={48} />
+            <strong style={{ fontSize: 20 }}>You are sharing your screen</strong>
+            <span style={{ opacity: 0.7, fontSize: 14, maxWidth: 420 }}>
+              Everyone in the meeting can see your window. Your camera is not shown.
+            </span>
+            <button className="v3-btn" style={{ width: 220 }} onClick={stopShare}>
+              Stop sharing
+            </button>
           </div>
         )}
 
-        <div className="video-tile">
+        {/* My own tile: hidden (not removed) during a share, so sign recognition keeps working */}
+        <div className="video-tile" style={compact ? HIDDEN_TILE : undefined}>
           <video ref={localVideoRef} autoPlay playsInline muted />
-          <div className="video-label">
-            {isHost ? 'You (Host)' : 'You'}
-            {sharing ? ' · camera' : ''}
-          </div>
+          <div className="video-label">{isHost ? 'You (Host)' : 'You'}</div>
         </div>
 
         {peerIds.map((id) => (
@@ -937,6 +942,7 @@ function MeetingRoom() {
             key={id}
             stream={peers[id]}
             isSharing={sharerId === id}
+            hidden={compact && sharerId !== id}
             label={
               (names[id]
                 ? names[id] + (id === hostId ? ' (Host)' : '')
@@ -1148,8 +1154,9 @@ function MeetingRoom() {
 
 // A small dedicated component per remote participant, so each one
 // gets its own <video> element and its own play()/unmute handling.
-// When that person is sharing their screen the tile is wide and not mirrored.
-function RemoteVideo({ stream, label, isSharing, onNeedsUnmute }) {
+// When that person is sharing their screen the tile is large and not mirrored.
+// A hidden tile keeps playing, so you still hear that person.
+function RemoteVideo({ stream, label, isSharing, hidden, onNeedsUnmute }) {
   const videoRef = useRef(null);
 
   useEffect(() => {
@@ -1164,14 +1171,17 @@ function RemoteVideo({ stream, label, isSharing, onNeedsUnmute }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stream]);
 
-  const tileStyle = isSharing
-    ? {
-        gridColumn: '1 / -1',
-        width: '100%',
-        maxWidth: 960,
-        justifySelf: 'center',
-      }
-    : undefined;
+  let tileStyle;
+  if (hidden) {
+    tileStyle = HIDDEN_TILE;
+  } else if (isSharing) {
+    tileStyle = {
+      gridColumn: '1 / -1',
+      width: '100%',
+      maxWidth: 1200,
+      justifySelf: 'center',
+    };
+  }
 
   const videoStyle = isSharing
     ? { transform: 'none', objectFit: 'contain', background: '#000' }
